@@ -49,25 +49,44 @@ uv --version
 cd D:\project\agent-core
 ```
 
-### 2. 配置 API
+### 2. 配置大模型
 
-复制配置文件，然后编辑它：
+项目支持**同时配置多家大模型**，一键切换。推荐用 `profiles.yaml`：
+
+**方式一：profiles.yaml（推荐，支持多 provider）**
+
+```bash
+copy profiles.example.yaml profiles.yaml
+```
+
+打开 `profiles.yaml`，填上你要用的 key：
+
+```yaml
+deepseek:                           # ← 这是 profile 名，随便取
+  base_url: https://api.deepseek.com/v1
+  api_key: sk-你的key
+  model: deepseek-chat
+
+openai:                             # ← 公司如果有 OpenAI key 也可以加
+  base_url: https://api.openai.com/v1
+  api_key: sk-你的key
+  model: gpt-4o
+```
+
+文件里可以放任意多个 provider，互不影响。`profiles.yaml` 已加入 `.gitignore`，不会提交到仓库。
+
+**方式二：.env（简单场景，单 provider）**
 
 ```bash
 copy .env.example .env
 ```
 
-打开 `.env`，填上你的 API 信息。这三个字段必须填：
+打开 `.env`，填入：
 
 ```bash
-# 必填：API 地址
-OPENAI_BASE_URL=https://api.openai.com/v1
-
-# 必填：API 密钥
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-
-# 必填：模型名称
-OPENAI_MODEL=gpt-4o
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_API_KEY=sk-你的key
+OPENAI_MODEL=deepseek-chat
 ```
 
 ### 3. 安装依赖
@@ -78,28 +97,15 @@ uv sync
 
 这一步会自动安装 `openai` 和 `pydantic` 两个依赖包，大约 10 秒。
 
-### 4. 运行示例
+### 4. 运行
 
 ```bash
+# 用 profiles.yaml（推荐）
+PYTHONPATH="" uv run python examples/basic.py deepseek
+
+# 或者用 .env
 PYTHONPATH="" uv run python examples/basic.py
 ```
-
-你应该会看到类似这样的输出：
-
-```
-── Step 1 ──
-→ web_search({"query": "latest Python version"})
-← Search results for "latest Python version": ...
-
-── Step 2 ──
-→ calculate({"expression": "2026 - 1994"})
-← 32
-
-── Step 3 ──
-Done: 最新 Python 版本是 3.13，2026 减 1994 等于 32。
-```
-
-> **注意：** 命令前面的 `PYTHONPATH=""` 是因为本机 Hermes 的环境变量有冲突，运行这个项目时必须加。后续可以写到脚本里。
 
 ---
 
@@ -153,31 +159,68 @@ result = run(
 
 ---
 
-## API 供应商支持
+## 多 Provider 切换
 
-因为直接用的 OpenAI SDK，**所有兼容 OpenAI 接口格式的供应商都能用**。只需要改 `.env` 里的三个字段：
+项目支持同时配置多家大模型，一个命令就能切换。**不需要改代码，不需要改环境变量。**
 
-| 供应商 | OPENAI_BASE_URL | OPENAI_MODEL 示例 | 备注 |
-|--------|----------------|-------------------|------|
-| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o` | 官方，质量最高 |
-| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` | 性价比高，中文好 |
-| **Anthropic** | 需通过兼容代理 | `claude-sonnet-4-20250514` | 需代理转换层 |
-| **OpenRouter** | `https://openrouter.ai/api/v1` | `openai/gpt-4o` | 聚合平台，一个 key 调多家 |
-| **Groq** | `https://api.groq.com/openai/v1` | `llama-3.1-70b-versatile` | 速度快（LPU 推理） |
-| **Together AI** | `https://api.together.xyz/v1` | `meta-llama/Llama-3.1-70B` | 开源模型托管 |
-| **Ollama（本地）** | `http://localhost:11434/v1` | `qwen2.5:7b` | 免费，本地跑，数据不出本机 |
-| **通义千问** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | 阿里云 |
-| **智谱 GLM** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4` | 国内，中文好 |
-| **Moonshot** | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | 长上下文 |
-| **硅基流动** | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | 国内聚合平台 |
+### 三种指定方式（优先级从高到低）
 
-**你目前在 Hermes 里用的是 DeepSeek v4**，所以你的 `.env` 应该这样填：
+```
+命令行 --profile  >  环境变量 AGENT_PROFILE  >  .env 文件
+```
+
+### 用法
 
 ```bash
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_API_KEY=sk-你的deepseek-key
-OPENAI_MODEL=deepseek-chat
+# 方式 1：命令行指定（最灵活）
+PYTHONPATH="" uv run python examples/basic.py deepseek
+PYTHONPATH="" uv run python examples/basic.py openai
+PYTHONPATH="" uv run python examples/repl.py ollama
+
+# 方式 2：环境变量（一次设置，整个终端窗口生效）
+export AGENT_PROFILE=deepseek
+PYTHONPATH="" uv run python examples/repl.py
+
+# 方式 3：不指定，自动用 .env（向后兼容）
+PYTHONPATH="" uv run python examples/basic.py
 ```
+
+### 怎么添加新 provider
+
+编辑 `profiles.yaml`，加一个条目即可：
+
+```yaml
+# 你家用的
+deepseek:
+  base_url: https://api.deepseek.com/v1
+  api_key: sk-xxx
+  model: deepseek-chat
+
+# 公司用的
+openai:
+  base_url: https://api.openai.com/v1
+  api_key: sk-xxx
+  model: gpt-4o
+
+# 本地跑的
+ollama:
+  base_url: http://localhost:11434/v1
+  api_key: ollama
+  model: qwen2.5:7b
+```
+
+### 内置模板（profiles.example.yaml）
+
+| profile 名 | 供应商 | 说明 |
+|-----------|--------|------|
+| `deepseek` | DeepSeek | 性价比高，中文好 |
+| `openai` | OpenAI | 质量最高 |
+| `siliconflow` | 硅基流动 | 国内聚合平台 |
+| `openrouter` | OpenRouter | 海外聚合，一个 key 调所有 |
+| `groq` | Groq | LPU 推理，速度极快 |
+| `qwen` | 通义千问 | 阿里云 |
+| `glm` | 智谱 GLM | 中文能力强 |
+| `ollama` | Ollama | 免费，本地跑，数据不出本机 |
 
 ---
 
@@ -185,21 +228,25 @@ OPENAI_MODEL=deepseek-chat
 
 ```
 agent-core/
-├── pyproject.toml          # 项目配置：名称、Python 版本、依赖包
-├── .env.example            # API 配置模板，复制为 .env 使用
-├── .gitignore              # 告诉 git 忽略哪些文件
+├── pyproject.toml              # 项目配置
+├── profiles.example.yaml       # 多 provider 模板，复制为 profiles.yaml 使用
+├── .env.example                # 单 provider 模板
+├── .gitignore
 │
-├── src/agent_core/         # 源代码（核心）
-│   ├── core.py             # ★ 主角 —— agent 循环，只有 70 行
-│   ├── tools.py            # 工具注册器 —— 用装饰器定义工具
-│   ├── checkpoint.py       # 进度保存 —— 存到 JSON 文件
-│   └── types.py            # 数据类型 —— Message、AgentState
+├── src/agent_core/
+│   ├── core.py                 # ★ 主角 —— agent 循环，~70 行
+│   ├── config.py               # provider 配置加载
+│   ├── tools.py                # 工具注册器
+│   ├── checkpoint.py           # 进度保存（JSON 文件）
+│   └── types.py                # 数据类型
 │
 ├── examples/
-│   └── basic.py            # 示例：带搜索和计算工具的 Agent
+│   ├── basic.py                # 单次出行规划
+│   ├── repl.py                 # 持续对话 REPL
+│   └── interactive.py          # 带 ask_user 的交互式 Agent
 │
 └── tests/
-    └── test_agent.py       # 自动化测试（8 个，全通过）
+    └── test_agent.py           # 自动化测试
 ```
 
 ### 核心循环图解
@@ -258,8 +305,20 @@ A: 检查三件事：
 2. `OPENAI_API_KEY` 是否正确
 3. 是否需要代理（如果在本机，确认 Clash 开着）
 
-### Q: 怎么换模型？
-A: 改 `.env` 里的 `OPENAI_MODEL`，比如改成 `deepseek-chat`、`gpt-4o-mini`。
+### Q: 怎么切换大模型？
+A: 三种方式——
+```bash
+# 临时切换：命令行加 profile 名
+PYTHONPATH="" uv run python examples/repl.py openai
+
+# 固定切换：设置环境变量
+export AGENT_PROFILE=openai
+
+# 或者直接在 .env 里改 OPENAI_MODEL
+```
+
+### Q: 怎么添加新的 provider？
+A: 编辑 `profiles.yaml`，加一个条目，写清 `base_url`、`api_key`、`model` 三个字段即可。所有兼容 OpenAI 接口的都能用。
 
 ### Q: Agent 卡住了怎么办？
 A: 默认最多跑 20 步自动停止。如果你想改，在 `run()` 里传 `max_steps=50`。
