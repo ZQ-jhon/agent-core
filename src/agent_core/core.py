@@ -69,6 +69,9 @@ def run(
         if system:
             state.messages.append(Message(role="system", content=system))
         state.messages.append(Message(role="user", content=prompt))
+    elif prompt:
+        # 多轮对话：追加新的用户消息
+        state.messages.append(Message(role="user", content=prompt))
 
     # ── The loop ──────────────────────────────────────────────
     while state.step < max_steps:

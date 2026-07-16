@@ -1,0 +1,80 @@
+"""REPL — 和 Agent 持续对话
+
+To run:
+    PYTHONPATH="" uv run python examples/repl.py
+
+每次输入一行，Agent 会记住之前的对话。输入 "退出" 结束。
+"""
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from agent_core import ToolRegistry, run
+
+registry = ToolRegistry()
+
+# ── 工具 ────────────────────────────────────────────────────
+
+CITY_DISTANCE = {
+    ("北京", "上海"): 1213, ("北京", "杭州"): 1270,
+    ("北京", "广州"): 2137, ("上海", "杭州"): 176,
+    ("上海", "南京"): 300, ("广州", "深圳"): 136,
+    ("成都", "重庆"): 309, ("成都", "西安"): 742,
+}
+
+
+@registry.register(description="查询两个城市之间的驾车距离（公里）")
+def get_distance(from_city: str, to_city: str) -> str:
+    for (a, b), dist in CITY_DISTANCE.items():
+        if (from_city, to_city) == (a, b) or (from_city, to_city) == (b, a):
+            return f"{from_city} 到 {to_city} 约 {dist} 公里"
+    return f"未找到 {from_city} 到 {to_city} 的距离数据"
+
+
+@registry.register(description="计算数学表达式，支持加减乘除")
+def calculate(expression: str) -> str:
+    allowed = set("0123456789+-*/().^ ")
+    if not all(c in allowed for c in expression):
+        return f"表达式包含不允许的字符：{expression}"
+    try:
+        return str(eval(expression.replace("^", "**"), {"__builtins__": {}}))
+    except Exception as e:
+        return f"计算出错：{e}"
+
+
+@registry.register(description="当你缺少关键信息、需要用户确认或做选择时调用")
+def ask_user(question: str) -> str:
+    print(f"\n🤔 {question}")
+    return input("> ")
+
+
+# ── REPL 主循环 ─────────────────────────────────────────────
+
+def main():
+    print("=" * 50)
+    print("出行规划 Agent — 输入问题开始对话，输入「退出」结束")
+    print("=" * 50)
+
+    first_turn = True
+
+    while True:
+        user_input = input("\n🧑 你：").strip()
+        if not user_input:
+            continue
+        if user_input in ("退出", "exit", "quit", "q"):
+            print("再见！")
+            break
+
+        result = run(
+            prompt=user_input,
+            registry=registry,
+            system="你是一个出行规划助手。信息不全时用 ask_user 确认。回答简洁。",
+            resume=not first_turn,
+            verbose=True,
+        )
+        first_turn = False
+        print(f"\n🤖 Agent：{result}")
+
+
+if __name__ == "__main__":
+    main()
