@@ -15,18 +15,18 @@ from agent_core import ToolRegistry, run
 registry = ToolRegistry()
 
 
-@registry.register(description="Search the web for current information")
+@registry.register(description="搜索网页获取最新信息")
 def web_search(query: str) -> str:
-    """MOCK — replace with real search API (SerpAPI, Tavily, etc.)"""
+    """MOCK — 替换为真实搜索 API（SerpAPI、Tavily 等）"""
     return (
-        f'Search results for "{query}":\n'
-        "1. Python 3.13 released with experimental JIT compiler\n"
-        "2. OpenAI announces GPT-5 preview for enterprise\n"
-        "3. TypeScript 6.0 adds native type inference for AI workflows"
+        f'搜索结果 "{query}"：\n'
+        "1. Python 3.13 发布，支持实验性 JIT 编译器\n"
+        "2. OpenAI 发布 GPT-5 企业预览版\n"
+        "3. TypeScript 6.0 新增 AI 工作流原生类型推断"
     )
 
 
-@registry.register(description="Evaluate a mathematical expression. Supports +, -, *, /, **.")
+@registry.register(description="计算数学表达式，支持加减乘除和幂运算")
 def calculate(expression: str) -> str:
     """Evaluate a math expression. Uses Python eval with safety restrictions."""
     # Safety: only allow numbers, operators, parens, spaces
@@ -52,4 +52,4 @@ if __name__ == "__main__":
         resume=False,
     )
     print(f"\n{'='*60}")
-    print(f"Final answer:\n{result}")
+    print(f"最终回答：\n{result}")

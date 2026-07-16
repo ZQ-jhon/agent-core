@@ -57,10 +57,10 @@ def run(
     if resume:
         state = load_checkpoint(checkpoint_dir=checkpoint_dir)
         if state is None:
-            _log("No checkpoint found, starting fresh.", verbose)
+            _log("未找到存档，从头开始。", verbose)
             state = AgentState()
         else:
-            _log(f"Resumed from {state.checkpoint_id} (step {state.step})", verbose)
+            _log(f"从 {state.checkpoint_id} 恢复（第 {state.step} 步）", verbose)
     else:
         state = AgentState()
 
@@ -87,7 +87,7 @@ def run(
         if choice.finish_reason == "stop":
             content = choice.message.content or ""
             state.messages.append(Message(role="assistant", content=content))
-            _log(f"Done: {content[:200]}", verbose)
+            _log(f"完成：{content[:200]}", verbose)
             save_checkpoint(state, checkpoint_dir)
             return content
 
@@ -119,8 +119,8 @@ def run(
                 result = registry.execute(tool_name, tool_args)
                 result_str = str(result)
             except Exception as e:
-                result_str = f"Error: {e}"
-                _log(f"✗ Tool error: {e}", verbose)
+                result_str = f"工具出错：{e}"
+                _log(f"✗ 工具出错：{e}", verbose)
 
             _log(f"← {result_str[:200]}", verbose)
 
@@ -136,13 +136,13 @@ def run(
         # Unexpected finish reason (length, content_filter, etc.)
         content = choice.message.content or ""
         state.messages.append(Message(role="assistant", content=content))
-        _log(f"Stopped ({choice.finish_reason}): {content[:200]}", verbose)
+        _log(f"异常终止（{choice.finish_reason}）：{content[:200]}", verbose)
         save_checkpoint(state, checkpoint_dir)
         return content
 
     # Max steps exceeded
-    _log(f"\n⚠ Max steps ({max_steps}) reached.", verbose)
-    return "[MAX_STEPS] Agent did not finish within step limit."
+    _log(f"\n⚠ 已达最大步数限制（{max_steps} 步）。", verbose)
+    return "[MAX_STEPS] Agent 未在步数限制内完成任务。"
 
 
 def _log(msg: str, verbose: bool) -> None:
