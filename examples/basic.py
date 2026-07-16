@@ -2,8 +2,11 @@
 
 To run:
     1. cp .env.example .env   (edit with your API key)
-    2. uv run python examples/basic.py
+    2. PYTHONPATH="" uv run python examples/basic.py
 """
+
+from dotenv import load_dotenv
+load_dotenv()  # 加载 .env 文件中的环境变量
 
 from agent_core import ToolRegistry, run
 
