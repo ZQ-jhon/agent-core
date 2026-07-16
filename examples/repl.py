@@ -1,14 +1,14 @@
 """REPL — 和 Agent 持续对话
 
-To run:
-    PYTHONPATH="" uv run python examples/repl.py
-
-每次输入一行，Agent 会记住之前的对话。输入 "退出" 结束。
+用法：
+    PYTHONPATH="" uv run python examples/repl.py                # 使用 .env
+    PYTHONPATH="" uv run python examples/repl.py deepseek       # 使用 profiles.yaml
 """
 
 from dotenv import load_dotenv
 load_dotenv()
 
+import sys
 from agent_core import ToolRegistry, run
 
 registry = ToolRegistry()
@@ -51,8 +51,9 @@ def ask_user(question: str) -> str:
 # ── REPL 主循环 ─────────────────────────────────────────────
 
 def main():
+    profile = sys.argv[1] if len(sys.argv) > 1 else None
     print("=" * 50)
-    print("出行规划 Agent — 输入问题开始对话，输入「退出」结束")
+    print(f"出行规划 Agent — profile={profile or '.env'}，输入「退出」结束")
     print("=" * 50)
 
     first_turn = True
@@ -68,6 +69,7 @@ def main():
         result = run(
             prompt=user_input,
             registry=registry,
+            profile=profile,
             system="你是一个出行规划助手。信息不全时用 ask_user 确认。回答简洁。",
             resume=not first_turn,
             verbose=True,

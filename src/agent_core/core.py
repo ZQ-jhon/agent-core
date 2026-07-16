@@ -6,13 +6,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from openai import OpenAI
 
 from .checkpoint import load as load_checkpoint
 from .checkpoint import save as save_checkpoint
+from .config import load_provider
 from .tools import ToolRegistry
 from .types import AgentState, Message
 
@@ -22,6 +22,7 @@ def run(
     registry: ToolRegistry,
     *,
     system: str | None = None,
+    profile: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
@@ -31,26 +32,26 @@ def run(
     verbose: bool = True,
 ) -> str:
     """
-    Run the agent loop.
+    运行 agent 循环。
 
     Args:
-        prompt: The user's request.
-        registry: A ToolRegistry with registered tools.
-        system: Optional system prompt.
-        model: Model name (default: env OPENAI_MODEL or gpt-4o).
-        base_url: API base url (default: env OPENAI_BASE_URL).
-        api_key: API key (default: env OPENAI_API_KEY).
-        max_steps: Safety limit to prevent infinite loops.
-        checkpoint_dir: Where checkpoints are stored.
-        resume: If True, load last checkpoint and continue.
-        verbose: Print each step.
+        prompt: 用户输入。
+        registry: 工具注册表。
+        system: 系统提示词（可选）。
+        profile: profiles.yaml 中的 provider 名称，如 "deepseek"。
+                 优先级：profile > AGENT_PROFILE 环境变量 > .env
+        model/base_url/api_key: 直接指定时覆盖 profile 中的值。
+        max_steps: 最大步数，防止无限循环。
+        checkpoint_dir: 存档目录。
+        resume: 是否从上次存档恢复。
+        verbose: 是否打印每一步。
     """
-    # ── Setup ─────────────────────────────────────────────────
+    provider = load_provider(profile)
     client = OpenAI(
-        base_url=base_url or os.getenv("OPENAI_BASE_URL"),
-        api_key=api_key or os.getenv("OPENAI_API_KEY"),
+        base_url=base_url or provider["base_url"],
+        api_key=api_key or provider["api_key"],
     )
-    model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+    model = model or provider["model"]
     tools = registry.tool_schemas() or None
 
     # ── Load or create state ──────────────────────────────────

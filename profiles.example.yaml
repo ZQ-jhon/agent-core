@@ -1,0 +1,42 @@
+# 多 provider 配置
+# 复制此文件为 profiles.yaml，填入真实 key。profiles.yaml 已在 .gitignore 中，不会提交。
+
+deepseek:
+  base_url: https://api.deepseek.com/v1
+  api_key: sk-你的deepseek-key
+  model: deepseek-chat
+
+openai:
+  base_url: https://api.openai.com/v1
+  api_key: sk-你的openai-key
+  model: gpt-4o
+
+siliconflow:
+  base_url: https://api.siliconflow.cn/v1
+  api_key: sk-你的硅基流动-key
+  model: deepseek-ai/DeepSeek-V3
+
+openrouter:
+  base_url: https://openrouter.ai/api/v1
+  api_key: sk-or-v1-你的key
+  model: openai/gpt-4o
+
+groq:
+  base_url: https://api.groq.com/openai/v1
+  api_key: gsk-你的groq-key
+  model: llama-3.1-70b-versatile
+
+qwen:
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key: sk-你的通义千问-key
+  model: qwen-plus
+
+glm:
+  base_url: https://open.bigmodel.cn/api/paas/v4
+  api_key: 你的智谱-key
+  model: glm-4
+
+ollama:
+  base_url: http://localhost:11434/v1
+  api_key: ollama
+  model: qwen2.5:7b
