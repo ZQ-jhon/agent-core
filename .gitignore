@@ -1,6 +1,7 @@
 .env
 profiles.yaml
 __pycache__/
+.pytest_cache/
 *.pyc
 .venv/
 checkpoints/

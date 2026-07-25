@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zq-jhon.github.io/agent-core/a2ui/v1/a2ui-api-v1.schema.json",
+  "title": "A2UI Form Profile v1 API messages",
+  "oneOf": [
+    { "$ref": "#/$defs/formResolveRequest" },
+    { "$ref": "#/$defs/formSubmitRequest" },
+    { "$ref": "#/$defs/formSubmitSuccess" },
+    { "$ref": "#/$defs/formSubmitValidationError" },
+    { "$ref": "#/$defs/formSubmitError" }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "dataPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$"
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "componentType": {
+      "enum": [
+        "Form",
+        "Section",
+        "TextInput",
+        "TextArea",
+        "NumberInput",
+        "Select",
+        "RadioGroup",
+        "CheckboxGroup",
+        "DatePicker",
+        "Switch",
+        "Upload",
+        "Button",
+        "Alert",
+        "Markdown"
+      ]
+    },
+    "formResolveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "formKey", "client"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "requestId": { "$ref": "#/$defs/stableId" },
+        "formKey": { "$ref": "#/$defs/stableId" },
+        "context": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        },
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supportedSchemaVersions", "supportedComponents"],
+          "properties": {
+            "supportedSchemaVersions": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+            },
+            "supportedComponents": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/componentType" }
+            },
+            "locale": { "type": "string", "minLength": 2, "maxLength": 35 },
+            "timeZone": { "type": "string", "minLength": 1, "maxLength": 100 }
+          }
+        }
+      }
+    },
+    "formSubmitRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "formId",
+        "revision",
+        "action",
+        "data"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "requestId": { "$ref": "#/$defs/stableId" },
+        "formId": { "$ref": "#/$defs/stableId" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["actionId", "sourceComponentId"],
+          "properties": {
+            "actionId": { "$ref": "#/$defs/stableId" },
+            "sourceComponentId": { "$ref": "#/$defs/stableId" }
+          }
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        },
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "locale": { "type": "string", "minLength": 2, "maxLength": 35 },
+            "timeZone": { "type": "string", "minLength": 1, "maxLength": 100 }
+          }
+        }
+      }
+    },
+    "generalError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "fieldError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "componentId": { "$ref": "#/$defs/stableId" }
+      }
+    },
+    "formSubmitSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "formId", "status"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "requestId": { "$ref": "#/$defs/stableId" },
+        "formId": { "$ref": "#/$defs/stableId" },
+        "status": { "const": "success" },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "message": { "type": "string", "maxLength": 500 },
+            "submissionId": { "$ref": "#/$defs/stableId" }
+          }
+        }
+      }
+    },
+    "formSubmitValidationError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "formId",
+        "status",
+        "fieldErrors"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "requestId": { "$ref": "#/$defs/stableId" },
+        "formId": { "$ref": "#/$defs/stableId" },
+        "status": { "const": "validation_error" },
+        "fieldErrors": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/dataPath" },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/fieldError" }
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/generalError" }
+        }
+      }
+    },
+    "formSubmitError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "formId", "status", "errors"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "requestId": { "$ref": "#/$defs/stableId" },
+        "formId": { "$ref": "#/$defs/stableId" },
+        "status": { "const": "error" },
+        "errors": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/generalError" }
+        }
+      }
+    }
+  }
+}

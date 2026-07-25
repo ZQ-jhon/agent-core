@@ -1,0 +1,683 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zq-jhon.github.io/agent-core/a2ui/v1/a2ui-form-v1.schema.json",
+  "title": "A2UI Form Profile v1 document",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "formId",
+    "revision",
+    "root",
+    "data",
+    "actions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "requestId": { "$ref": "#/$defs/stableId" },
+    "formId": { "$ref": "#/$defs/stableId" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "root": {
+      "allOf": [
+        { "$ref": "#/$defs/componentNode" },
+        { "properties": { "type": { "const": "Form" } } }
+      ]
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initialValues"],
+      "properties": {
+        "initialValues": { "type": "object" }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/actionDefinition" }
+    },
+    "dataSources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/remoteOptionsSource" }
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/linkRule" }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "locale": { "type": "string", "minLength": 2, "maxLength": 35 },
+        "traceId": { "$ref": "#/$defs/stableId" },
+        "title": { "type": "string", "maxLength": 200 }
+      }
+    }
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "dataPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$"
+    },
+    "endpointKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]*$"
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "value": { "type": ["string", "number", "boolean"] },
+        "disabled": { "type": "boolean", "default": false }
+      }
+    },
+    "actionBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actionId"],
+      "properties": {
+        "actionId": { "$ref": "#/$defs/stableId" },
+        "confirm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["title", "message"],
+          "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "confirmLabel": { "type": "string", "minLength": 1, "maxLength": 40 },
+            "cancelLabel": { "type": "string", "minLength": 1, "maxLength": 40 }
+          }
+        }
+      }
+    },
+    "validator": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "required" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "value"],
+          "properties": {
+            "type": { "enum": ["minLength", "maxLength", "minItems", "maxItems"] },
+            "value": { "type": "integer", "minimum": 0 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "value"],
+          "properties": {
+            "type": { "enum": ["minimum", "maximum"] },
+            "value": { "type": "number" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "value"],
+          "properties": {
+            "type": { "const": "pattern" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "integer" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+          }
+        }
+      ]
+    },
+    "formProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "submitOnEnter": { "type": "boolean", "default": false }
+      }
+    },
+    "sectionProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "collapsible": { "type": "boolean", "default": false },
+        "defaultCollapsed": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true }
+      }
+    },
+    "textInputProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "autoComplete": { "type": "string", "maxLength": 80 },
+        "inputMode": { "enum": ["text", "email", "tel", "url", "search"] },
+        "readOnly": { "type": "boolean", "default": false }
+      }
+    },
+    "textAreaProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "rows": { "type": "integer", "minimum": 2, "maximum": 20, "default": 4 },
+        "maxRows": { "type": "integer", "minimum": 2, "maximum": 40 }
+      }
+    },
+    "numberInputProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "step": { "type": "number", "exclusiveMinimum": 0, "default": 1 },
+        "unit": { "type": "string", "maxLength": 30 }
+      }
+    },
+    "selectProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "clearable": { "type": "boolean", "default": true },
+        "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/option" } },
+        "dataSourceId": { "$ref": "#/$defs/stableId" }
+      },
+      "oneOf": [
+        { "required": ["options"], "not": { "required": ["dataSourceId"] } },
+        { "required": ["dataSourceId"], "not": { "required": ["options"] } }
+      ]
+    },
+    "choiceProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "options"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/option" } },
+        "orientation": { "enum": ["horizontal", "vertical"], "default": "vertical" }
+      }
+    },
+    "datePickerProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "placeholder": { "type": "string", "maxLength": 200 },
+        "minDate": { "type": "string", "format": "date" },
+        "maxDate": { "type": "string", "format": "date" }
+      }
+    },
+    "switchProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "onLabel": { "type": "string", "maxLength": 40 },
+        "offLabel": { "type": "string", "maxLength": 40 }
+      }
+    },
+    "uploadProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "helpText": { "type": "string", "maxLength": 500 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true },
+        "accept": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "maxFiles": { "type": "integer", "minimum": 1, "maximum": 20, "default": 1 },
+        "maxSizeBytes": { "type": "integer", "minimum": 1 },
+        "buttonLabel": { "type": "string", "maxLength": 80 }
+      }
+    },
+    "buttonProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "variant": { "enum": ["primary", "secondary", "danger", "text"], "default": "secondary" },
+        "loadingLabel": { "type": "string", "maxLength": 80 },
+        "disabled": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true }
+      }
+    },
+    "alertProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "title": { "type": "string", "maxLength": 120 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "variant": { "enum": ["info", "success", "warning", "error"], "default": "info" },
+        "dismissible": { "type": "boolean", "default": false },
+        "visible": { "type": "boolean", "default": true }
+      }
+    },
+    "markdownProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content"],
+      "properties": {
+        "content": { "type": "string", "maxLength": 20000 },
+        "ariaLabel": { "type": "string", "maxLength": 200 },
+        "visible": { "type": "boolean", "default": true }
+      }
+    },
+    "componentNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "props", "children"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "type": {
+          "enum": [
+            "Form",
+            "Section",
+            "TextInput",
+            "TextArea",
+            "NumberInput",
+            "Select",
+            "RadioGroup",
+            "CheckboxGroup",
+            "DatePicker",
+            "Switch",
+            "Upload",
+            "Button",
+            "Alert",
+            "Markdown"
+          ]
+        },
+        "props": { "type": "object" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/componentNode" }
+        },
+        "dataPath": { "$ref": "#/$defs/dataPath" },
+        "action": { "$ref": "#/$defs/actionBinding" },
+        "validation": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/validator" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "TextInput",
+                  "TextArea",
+                  "NumberInput",
+                  "Select",
+                  "RadioGroup",
+                  "CheckboxGroup",
+                  "DatePicker",
+                  "Switch"
+                ]
+              }
+            },
+            "required": ["type"]
+          },
+          "then": { "not": { "required": ["action"] } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Form" } }, "required": ["type"] },
+          "then": {
+            "properties": { "props": { "$ref": "#/$defs/formProps" }, "children": { "minItems": 1 } },
+            "not": {
+              "anyOf": [
+                { "required": ["dataPath"] },
+                { "required": ["action"] },
+                { "required": ["validation"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Section" } }, "required": ["type"] },
+          "then": {
+            "properties": { "props": { "$ref": "#/$defs/sectionProps" } },
+            "not": {
+              "anyOf": [
+                { "required": ["dataPath"] },
+                { "required": ["action"] },
+                { "required": ["validation"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "TextInput" } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/textInputProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "TextArea" } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/textAreaProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "NumberInput" } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/numberInputProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Select" } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/selectProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["RadioGroup", "CheckboxGroup"] } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/choiceProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "DatePicker" } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/datePickerProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Switch" } }, "required": ["type"] },
+          "then": { "required": ["dataPath"], "properties": { "props": { "$ref": "#/$defs/switchProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Upload" } }, "required": ["type"] },
+          "then": { "required": ["dataPath", "action"], "properties": { "props": { "$ref": "#/$defs/uploadProps" }, "children": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Button" } }, "required": ["type"] },
+          "then": {
+            "required": ["action"],
+            "properties": { "props": { "$ref": "#/$defs/buttonProps" }, "children": { "maxItems": 0 } },
+            "not": { "anyOf": [{ "required": ["dataPath"] }, { "required": ["validation"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Alert" } }, "required": ["type"] },
+          "then": {
+            "properties": { "props": { "$ref": "#/$defs/alertProps" }, "children": { "maxItems": 0 } },
+            "not": {
+              "anyOf": [
+                { "required": ["dataPath"] },
+                { "required": ["action"] },
+                { "required": ["validation"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Markdown" } }, "required": ["type"] },
+          "then": {
+            "properties": { "props": { "$ref": "#/$defs/markdownProps" }, "children": { "maxItems": 0 } },
+            "not": {
+              "anyOf": [
+                { "required": ["dataPath"] },
+                { "required": ["action"] },
+                { "required": ["validation"] }
+      ]
+    }
+  }
+}
+      ]
+    },
+    "actionDefinition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "endpointKey", "method"],
+          "properties": {
+            "id": { "$ref": "#/$defs/stableId" },
+            "type": { "const": "submit" },
+            "endpointKey": { "$ref": "#/$defs/endpointKey" },
+            "method": { "const": "POST" },
+            "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 15000 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type"],
+          "properties": {
+            "id": { "$ref": "#/$defs/stableId" },
+            "type": { "const": "reset" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "endpointKey", "method"],
+          "properties": {
+            "id": { "$ref": "#/$defs/stableId" },
+            "type": { "const": "upload" },
+            "endpointKey": { "$ref": "#/$defs/endpointKey" },
+            "method": { "const": "POST" },
+            "fieldName": { "type": "string", "minLength": 1, "maxLength": 80, "default": "file" },
+            "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 30000 }
+          }
+        }
+      ]
+    },
+    "querySource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "data" },
+            "path": { "$ref": "#/$defs/dataPath" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "searchText" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "literal" },
+            "value": { "type": ["string", "number", "boolean"] }
+          }
+        }
+      ]
+    },
+    "remoteOptionsSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "endpointKey", "method", "query", "response"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "type": { "const": "remoteOptions" },
+        "endpointKey": { "$ref": "#/$defs/endpointKey" },
+        "method": { "const": "GET" },
+        "query": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "source"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$" },
+              "source": { "$ref": "#/$defs/querySource" }
+            }
+          }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["itemsPath", "labelPath", "valuePath"],
+          "properties": {
+            "itemsPath": { "$ref": "#/$defs/dataPath" },
+            "labelPath": { "$ref": "#/$defs/dataPath" },
+            "valuePath": { "$ref": "#/$defs/dataPath" },
+            "disabledPath": { "$ref": "#/$defs/dataPath" }
+          }
+        },
+        "dependsOn": { "type": "array", "items": { "$ref": "#/$defs/dataPath" }, "uniqueItems": true },
+        "debounceMs": { "type": "integer", "minimum": 0, "maximum": 2000, "default": 300 },
+        "minQueryLength": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0 },
+        "cacheTtlSeconds": { "type": "integer", "minimum": 0, "maximum": 86400, "default": 300 }
+      }
+    },
+    "condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path", "value"],
+          "properties": {
+            "op": { "enum": ["equals", "notEquals", "greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual", "in", "notIn"] },
+            "path": { "$ref": "#/$defs/dataPath" },
+            "value": { "$ref": "#/$defs/jsonValue" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "path"],
+          "properties": {
+            "op": { "enum": ["exists", "isEmpty"] },
+            "path": { "$ref": "#/$defs/dataPath" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "args"],
+          "properties": {
+            "op": { "enum": ["and", "or"] },
+            "args": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/condition" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "arg"],
+          "properties": {
+            "op": { "const": "not" },
+            "arg": { "$ref": "#/$defs/condition" }
+          }
+        }
+      ]
+    },
+    "ruleEffect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "targetComponentId", "value"],
+          "properties": {
+            "type": { "enum": ["setVisible", "setDisabled"] },
+            "targetComponentId": { "$ref": "#/$defs/stableId" },
+            "value": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "targetDataPath", "value"],
+          "properties": {
+            "type": { "const": "setValue" },
+            "targetDataPath": { "$ref": "#/$defs/dataPath" },
+            "value": { "$ref": "#/$defs/jsonValue" }
+          }
+        }
+      ]
+    },
+    "linkRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "event", "sourceDataPath", "when", "then"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "event": { "const": "change" },
+        "sourceDataPath": { "$ref": "#/$defs/dataPath" },
+        "when": { "$ref": "#/$defs/condition" },
+        "then": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/ruleEffect" } },
+        "else": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/ruleEffect" } }
+      }
+    }
+  }
+}
