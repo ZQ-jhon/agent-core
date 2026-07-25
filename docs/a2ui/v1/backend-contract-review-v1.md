@@ -8,9 +8,9 @@
 | 候选发布日期 | 2026-07-25 |
 | 协议负责人 | 泛前端开发专家 |
 | 后端评审方 | A2UI Python 后端任务负责人 |
-| 当前结论 | 后端第二轮评审新增 2 项阻断；协议负责人已按协调决定完成修订且全量测试 17 passed，等待最终复审，不可冻结 |
+| 当前结论 | 后端最终复审 `accepted_freeze`；请求、下发、提交/幂等和字段错误四项均已接受，`1.0.0` 已冻结 |
 
-冻结门禁：后端评审方必须对下表每项给出“接受”或给出具体变更意见；协议负责人吸收反馈、重新运行契约测试并把结论记录到本文后，才把 `schema-v1.md` 状态改为“已冻结”。
+冻结门禁已满足：后端评审方基于 PR #3 的 `d0257ef` 确认 `accepted_freeze`；协议负责人复跑全量契约测试并记录结论后，已把 `schema-v1.md` 状态改为“已冻结”。
 
 ## 1. 待确认契约基线
 
@@ -78,7 +78,7 @@
 | 幂等回放与过期 revision 优先级冲突 | 固定为严格解析后先按请求 scope 原子查记录；已完成同 key/同指纹优先回放，只有无记录时才校验当前 revision/action/source | `test_completed_idempotent_replay_precedes_current_revision_validation` 固化处理顺序与“rev4 响应丢失、升到 rev5 后重试”正例 |
 | remote options 配置权属不一致 | Form Schema 与 TS 删除 method/query/source-path/response/dependsOn；示例只引用 endpointKey，可信注册表 descriptor 成为执行语义唯一权威 | `test_remote_options_execution_semantics_are_registry_owned` 校验最小模型，并分别拒绝参数名、数据来源路径和响应映射三类不匹配 |
 
-复审请求：请后端评审方重点复核第二轮两项阻断，并再次分别确认请求、下发、提交、字段错误四项；全部关闭后请明确给出“接受，可冻结”。复审通过前 `schema-v1.md` 继续保持“冻结候选”。
+复审结论：后端评审方已确认第二轮两项阻断关闭，并分别接受请求、下发、提交/幂等和字段错误四项；结论为 `accepted_freeze`。冻结技术基线为 PR #3 的 `d0257ef`，后续协议字段或范围变更必须走新版本与兼容性流程。
 
 本轮验证命令：`PYTHONPATH=src uv run --extra dev pytest -q`；结果：`17 passed`。
 
@@ -89,3 +89,4 @@
 | 2026-07-25 | `1.0.0` 冻结候选 | 建立快照包络、14 个组件、同步校验、白名单联动、三类 action、远程选项与 REST 错误契约 | 初稿进入后端评审 |
 | 2026-07-25 | `1.0.0` 冻结候选修订 1 | 吸收 resolve 错误、成功结果必填、submit 幂等三项阻断；示例对齐最小聚焦 PRD | 修订完成，等待后端复审，不可冻结 |
 | 2026-07-25 | `1.0.0` 冻结候选修订 2 | 明确幂等回放优先于当前 revision/action 校验；远程 options 执行语义收归可信注册表唯一托管 | 修订完成，17 passed，等待后端最终复审，不可冻结 |
+| 2026-07-25 | `1.0.0` 已冻结 | 后端基于 PR #3 `d0257ef` 确认 `accepted_freeze`；未新增协议字段或范围 | 请求、下发、提交/幂等、字段错误四项接受；17 passed |

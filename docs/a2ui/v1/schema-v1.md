@@ -1,6 +1,7 @@
 # A2UI 动态表单 Schema v1
 
-状态：`1.0.0` 冻结候选（完成后端契约评审后冻结）  
+状态：`1.0.0` 已冻结（后端契约复审 `accepted_freeze`；技术基线 `d0257ef`）
+
 适用项目：`agent-core` 的 A2UI 动态表单演示与后端适配  
 规范 Schema：[`schema/a2ui-form-v1.schema.json`](schema/a2ui-form-v1.schema.json)  
 API 消息 Schema：[`schema/a2ui-api-v1.schema.json`](schema/a2ui-api-v1.schema.json)  
