@@ -4,6 +4,7 @@
   "title": "A2UI Form Profile v1 API messages",
   "oneOf": [
     { "$ref": "#/$defs/formResolveRequest" },
+    { "$ref": "#/$defs/formResolveError" },
     { "$ref": "#/$defs/formSubmitRequest" },
     { "$ref": "#/$defs/formSubmitSuccess" },
     { "$ref": "#/$defs/formSubmitValidationError" },
@@ -91,6 +92,7 @@
       "required": [
         "schemaVersion",
         "requestId",
+        "idempotencyKey",
         "formId",
         "revision",
         "action",
@@ -99,6 +101,7 @@
       "properties": {
         "schemaVersion": { "const": "1.0.0" },
         "requestId": { "$ref": "#/$defs/stableId" },
+        "idempotencyKey": { "$ref": "#/$defs/stableId" },
         "formId": { "$ref": "#/$defs/stableId" },
         "revision": { "type": "integer", "minimum": 1 },
         "action": {
@@ -144,10 +147,26 @@
         "componentId": { "$ref": "#/$defs/stableId" }
       }
     },
+    "formResolveError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "formKey", "status", "errors"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "requestId": { "$ref": "#/$defs/stableId" },
+        "formKey": { "$ref": "#/$defs/stableId" },
+        "status": { "const": "error" },
+        "errors": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/generalError" }
+        }
+      }
+    },
     "formSubmitSuccess": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "requestId", "formId", "status"],
+      "required": ["schemaVersion", "requestId", "formId", "status", "result"],
       "properties": {
         "schemaVersion": { "const": "1.0.0" },
         "requestId": { "$ref": "#/$defs/stableId" },
@@ -156,6 +175,7 @@
         "result": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["submissionId"],
           "properties": {
             "message": { "type": "string", "maxLength": 500 },
             "submissionId": { "$ref": "#/$defs/stableId" }

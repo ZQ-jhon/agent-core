@@ -1,6 +1,7 @@
 # A2UI 动态表单 Schema v1
 
-状态：`1.0.0` 冻结候选（完成后端契约评审后冻结）  
+状态：`1.0.0` 已冻结（后端契约复审 `accepted_freeze`；技术基线 `d0257ef`）
+
 适用项目：`agent-core` 的 A2UI 动态表单演示与后端适配  
 规范 Schema：[`schema/a2ui-form-v1.schema.json`](schema/a2ui-form-v1.schema.json)  
 API 消息 Schema：[`schema/a2ui-api-v1.schema.json`](schema/a2ui-api-v1.schema.json)  
@@ -9,6 +10,15 @@ API 消息 Schema：[`schema/a2ui-api-v1.schema.json`](schema/a2ui-api-v1.schema
 ## 1. 定位与范围
 
 本文定义项目本地的 **A2UI Form Profile v1**。它借鉴 A2UI 的声明式 UI、稳定组件标识、数据绑定和受控 action 思想，但为了首期 REST 下发、表单渲染与提交场景，使用一份完整快照而不是增量 JSONL 消息。
+
+本 Profile 服务于 Agent 当前任务：每次 resolve 应下发**最小、聚焦、可立即完成**的字段集合，而不是复用静态全量资料表。生产者必须遵循：
+
+- 单字段修改只包含目标字段和完成动作，不重复索取无关资料；
+- 条件化资料补全通过现有白名单规则显示、禁用或清空必要字段；
+- 申请或预约只收集完成当前动作所必需且有明确约束的字段；
+- 可编辑字段超过 7 个时应拆成多个任务/表单；确因原子业务动作不可拆分时，必须在产品评审材料中说明，协议本身不新增或执行该业务解释。
+
+上述约束是文档生产策略，不是 `Form` 或输入组件的通用 prop。renderer 不负责猜测业务相关性，服务端/Agent 生产者负责选择最小组件树。
 
 本协议不是 Google A2UI v0.9.1/v1.0 的线级兼容实现。官方 v1.0 仍是 Candidate；后续若接入官方 renderer，应新增独立 adapter，不得在同一 `schemaVersion` 下悄悄改变报文。参考：[A2UI 版本状态](https://a2ui.org/)与[官方协议概览](https://a2ui.org/concepts/overview/)。
 
@@ -38,7 +48,7 @@ v1 不包含：
 - 主版本不同：客户端必须拒绝整份文档，显示“协议版本不受支持”，不得尝试渲染。
 - 次版本或补丁版本不同：只有版本位于客户端显式声明的 `supportedSchemaVersions` 中时才能接收；不按“同主版本自动兼容”猜测。
 - 新组件、新必填字段、字段语义改变均至少发布新次版本及新 Schema；破坏性变更发布新主版本。
-- 同一 `formId` 的内容更新递增 `revision`。提交必须回传该值；服务端遇到过期 revision 返回 `FORM_REVISION_CONFLICT`。
+- 同一 `formId` 的内容更新递增 `revision`。提交必须回传该值；没有既存幂等记录的首次执行遇到过期 revision 返回 `FORM_REVISION_CONFLICT`。已完成提交的同 key、同指纹重试优先回放，不受当前 revision 变化影响。
 - Schema 文件默认严格校验未知字段。若未先协商新版本，未知字段属于 `SCHEMA_INVALID`，不能静默生效。
 
 ## 3. 下发文档包络
@@ -165,6 +175,7 @@ interface UploadValue {
 {
   "schemaVersion": "1.0.0",
   "requestId": "req-submit-001",
+  "idempotencyKey": "idem-submit-01J2ABC",
   "formId": "travel-application",
   "revision": 4,
   "action": {
@@ -181,8 +192,9 @@ interface UploadValue {
 提交规则：
 
 - path 中的 `{formId}` 必须与 body 一致；
-- `actionId` 必须存在且类型为 `submit`，`sourceComponentId` 必须引用绑定该 action 的组件；
-- `revision` 必须仍有效；
+- `idempotencyKey` 必填，由客户端为一次逻辑提交生成；`requestId` 只用于追踪，重试时可以变化；
+- 完成鉴权/授权、严格包络解析和 path/body 一致性校验后，服务端必须先按请求携带的 scope 与 `idempotencyKey` 原子查询记录并比较规范化请求指纹；
+- 已完成的同 key、同指纹记录必须直接回放，即使当前 `revision` 或 action 已过期；只有没有既存记录时，才要求 `revision` 仍有效，并校验 `actionId` 为 `submit`、`sourceComponentId` 绑定该 action；
 - 服务端重新执行类型、枚举、字段和业务校验；
 - 日志至少包含 `requestId`、`formId`、`revision`、认证主体和结果码，但不记录敏感字段原文。
 
@@ -200,6 +212,8 @@ interface UploadValue {
   }
 }
 ```
+
+`result` 与 `result.submissionId` 均为必填。同一幂等提交的成功回放必须返回首次提交相同的 `submissionId` 和 JSON 深度等价的 `result`；允许使用新的 `requestId` 回显本次重试链路。
 
 ### 6.4 字段错误响应
 
@@ -226,9 +240,31 @@ interface UploadValue {
 
 `fieldErrors` 的 key 必须是提交数据的绝对 JSON Pointer。客户端按 `dataPath` 映射到字段，聚焦首个可见错误，并在表单顶部提供错误摘要。无法映射的字段错误仍放入摘要，不得丢弃。
 
+### 6.5 resolve 错误响应
+
+resolve 尚未产生 `formId`，因此使用独立包络，并以请求中的 `formKey` 关联：
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "requestId": "req-resolve-001",
+  "formKey": "travel-application",
+  "status": "error",
+  "errors": [
+    {
+      "code": "CLIENT_CAPABILITY_MISMATCH",
+      "message": "客户端不支持完成该任务所需的组件",
+      "retryable": false
+    }
+  ]
+}
+```
+
+该包络用于 resolve 的所有非成功响应，不得填充虚构 `formId`，也不得复用 submit 通用错误模型。
+
 ## 7. 错误包络与状态码
 
-非字段错误统一为：
+submit 的非字段错误统一为：
 
 ```json
 {
@@ -251,7 +287,7 @@ interface UploadValue {
 | `400` | `REQUEST_INVALID`、`SCHEMA_INVALID` |
 | `401` / `403` | `UNAUTHENTICATED`、`FORBIDDEN` |
 | `404` | `FORM_NOT_FOUND`、`ENDPOINT_NOT_FOUND` |
-| `409` | `FORM_REVISION_CONFLICT`、`SUBMISSION_CONFLICT` |
+| `409` | `FORM_REVISION_CONFLICT`、`IDEMPOTENCY_KEY_CONFLICT`、`SUBMISSION_IN_PROGRESS` |
 | `422` | `VALIDATION_FAILED`、`CLIENT_CAPABILITY_MISMATCH` |
 | `429` | `RATE_LIMITED` |
 | `500` / `503` | `INTERNAL_ERROR`、`DEPENDENCY_UNAVAILABLE` |
@@ -265,8 +301,9 @@ interface UploadValue {
 5. 构建初始数据，再计算一次联动状态。
 6. 渲染组件并绑定字段；单个非关键子组件失败时显示降级占位。
 7. 用户编辑时仅执行匹配 `sourceDataPath` 的白名单规则，然后执行可见且启用字段的同步校验。
-8. 触发 submit 时先做客户端校验，再提交完整数据；服务端是最终裁决者。
-9. 将字段错误按 JSON Pointer 映射回组件；通用错误显示在 Form 错误摘要。
+8. 触发 submit 时先做客户端校验，为逻辑提交创建 `idempotencyKey`，再提交完整数据；安全重试复用该 key，服务端是最终裁决者。
+9. 服务端完成鉴权/授权、严格解析和 path/body 一致性后，先原子查询幂等记录并比较规范化请求指纹：同指纹已完成记录直接回放，异指纹返回 409；仅无记录时校验当前 revision/action/source、取得执行权，再执行写入并持久化可回放结果。具体规则见 `validation-and-actions-v1.md`。
+10. 将字段错误按 JSON Pointer 映射回组件；通用错误显示在 Form 错误摘要。
 
 ## 9. 完整性约束
 

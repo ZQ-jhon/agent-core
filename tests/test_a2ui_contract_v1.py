@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from copy import deepcopy
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,10 @@ SCHEMA_PATH = ROOT / "docs/a2ui/v1/schema/a2ui-form-v1.schema.json"
 API_SCHEMA_PATH = ROOT / "docs/a2ui/v1/schema/a2ui-api-v1.schema.json"
 EXAMPLES_PATH = ROOT / "docs/a2ui/v1/form-examples-v1.json"
 TYPES_PATH = ROOT / "docs/a2ui/v1/types/a2ui-form-v1.ts"
+VALIDATION_PATH = ROOT / "docs/a2ui/v1/validation-and-actions-v1.md"
 
 EXPECTED_EXAMPLES = {
-    "basic-application",
+    "single-field-update",
     "conditional-application",
     "remote-options-application",
 }
@@ -174,13 +176,6 @@ def test_examples_have_valid_references_and_data_bindings() -> None:
                     )
         assert_acyclic(set_value_graph)
 
-        for source in data_sources.values():
-            for dependency in source.get("dependsOn", []):
-                resolve_pointer(initial_values, dependency)
-            for query in source["query"]:
-                if query["source"]["kind"] == "data":
-                    resolve_pointer(initial_values, query["source"]["path"])
-
 
 def test_examples_do_not_contain_executable_configuration() -> None:
     _, examples = load_contract()
@@ -206,9 +201,117 @@ def test_examples_do_not_contain_executable_configuration() -> None:
     visit(examples)
 
 
+def test_examples_are_minimal_and_cover_agent_task_shapes() -> None:
+    _, examples = load_contract()
+    examples_by_id = {example["formId"]: example for example in examples}
+
+    editable_counts = {
+        form_id: sum(
+            node["type"] in INPUT_TYPES
+            for node in walk_nodes(example["root"])
+        )
+        for form_id, example in examples_by_id.items()
+    }
+    assert editable_counts["single-field-update"] == 1
+    assert all(count <= 7 for count in editable_counts.values())
+
+    conditional = examples_by_id["conditional-application"]
+    assert conditional["rules"]
+    assert any(
+        effect["type"] in {"setVisible", "setDisabled", "setValue"}
+        for rule in conditional["rules"]
+        for effect in rule["then"] + rule.get("else", [])
+    )
+
+    remote = examples_by_id["remote-options-application"]
+    assert remote["dataSources"]
+    assert any(source["type"] == "remoteOptions" for source in remote["dataSources"])
+
+
+def test_remote_options_execution_semantics_are_registry_owned() -> None:
+    schema, examples = load_contract()
+    remote_definition = schema["$defs"]["remoteOptionsSource"]
+    forbidden_execution_fields = {
+        "method",
+        "query",
+        "response",
+        "dependsOn",
+        "debounceMs",
+        "minQueryLength",
+        "cacheTtlSeconds",
+    }
+
+    assert remote_definition["required"] == ["id", "type", "endpointKey"]
+    assert set(remote_definition["properties"]) == {"id", "type", "endpointKey"}
+
+    remote_example = next(
+        example
+        for example in examples
+        if example["formId"] == "remote-options-application"
+    )
+    source = remote_example["dataSources"][0]
+    assert source["endpointKey"] == "locations.cities"
+    assert forbidden_execution_fields.isdisjoint(source)
+
+    mismatched_schema_configs = [
+        {
+            "query": [
+                {
+                    "name": "unregisteredCountryParam",
+                    "source": {
+                        "kind": "data",
+                        "path": "/destination/countryCode",
+                    },
+                }
+            ]
+        },
+        {
+            "query": [
+                {
+                    "name": "countryCode",
+                    "source": {
+                        "kind": "data",
+                        "path": "/unapproved/source/path",
+                    },
+                }
+            ]
+        },
+        {
+            "response": {
+                "itemsPath": "/unexpected/items",
+                "labelPath": "/display",
+                "valuePath": "/key",
+            }
+        },
+    ]
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    for mismatch in mismatched_schema_configs:
+        invalid_document = deepcopy(remote_example)
+        invalid_document["dataSources"][0].update(mismatch)
+        assert list(validator.iter_errors(invalid_document)), mismatch
+
+
+def test_completed_idempotent_replay_precedes_current_revision_validation() -> None:
+    contract = VALIDATION_PATH.read_text(encoding="utf-8")
+    ordered_markers = [
+        "认证/授权、严格包络解析以及 path/body 一致性校验",
+        "原子查询记录并比较规范化请求指纹",
+        "已有同 key、同指纹且已完成的记录必须直接回放",
+        "仅在记录不存在时，服务端才校验当前 revision、action、source 绑定",
+    ]
+    marker_positions = [contract.index(marker) for marker in ordered_markers]
+
+    assert marker_positions == sorted(marker_positions)
+    assert "客户端以 rev4 成功提交但响应丢失，随后表单升为 rev5" in contract
+    assert "回放 rev4 已持久化的响应" in contract
+
+
 def test_schema_types_and_examples_share_the_same_catalog() -> None:
     schema, examples = load_contract()
     typescript = TYPES_PATH.read_text(encoding="utf-8")
+    remote_options_type = typescript.partition(
+        "export interface RemoteOptionsSource {"
+    )[2].partition("}\n")[0]
     catalog = (ROOT / "docs/a2ui/v1/component-catalog-v1.md").read_text(
         encoding="utf-8"
     )
@@ -224,6 +327,18 @@ def test_schema_types_and_examples_share_the_same_catalog() -> None:
     assert schema_types == example_types
     assert schema["properties"]["schemaVersion"]["const"] == "1.0.0"
     assert 'A2UI_FORM_SCHEMA_VERSION = "1.0.0"' in typescript
+    assert "export interface FormResolveErrorV1" in typescript
+    assert "idempotencyKey: StableId;" in typescript
+    assert "result: { submissionId: StableId;" in typescript
+    assert {
+        line.strip()
+        for line in remote_options_type.splitlines()
+        if line.strip()
+    } == {
+        "id: StableId;",
+        'type: "remoteOptions";',
+        "endpointKey: string;",
+    }
     for component_type in schema_types:
         assert f'"{component_type}"' in typescript
         assert f"### {component_type}" in catalog
@@ -249,6 +364,7 @@ def test_api_message_examples_match_api_schema() -> None:
         {
             "schemaVersion": "1.0.0",
             "requestId": "req-submit-001",
+            "idempotencyKey": "idem-submit-01J2ABC",
             "formId": "travel-application",
             "revision": 4,
             "action": {
@@ -257,6 +373,19 @@ def test_api_message_examples_match_api_schema() -> None:
             },
             "data": {"destination": {"countryCode": "CN", "cityId": "sha"}},
             "client": {"locale": "zh-CN", "timeZone": "Asia/Shanghai"},
+        },
+        {
+            "schemaVersion": "1.0.0",
+            "requestId": "req-resolve-001",
+            "formKey": "travel-application",
+            "status": "error",
+            "errors": [
+                {
+                    "code": "CLIENT_CAPABILITY_MISMATCH",
+                    "message": "客户端能力不足",
+                    "retryable": False,
+                }
+            ],
         },
         {
             "schemaVersion": "1.0.0",
@@ -302,3 +431,77 @@ def test_api_message_examples_match_api_schema() -> None:
     for message in messages:
         errors = list(validator.iter_errors(message))
         assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_api_schema_rejects_ambiguous_resolve_and_submit_messages() -> None:
+    api_schema = json.loads(API_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(api_schema, format_checker=FormatChecker())
+    resolve_error_validator = Draft202012Validator(
+        {
+            "$ref": "#/$defs/formResolveError",
+            "$defs": api_schema["$defs"],
+        },
+        format_checker=FormatChecker(),
+    )
+
+    valid_submit_request = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-submit-001",
+        "idempotencyKey": "idem-submit-01J2ABC",
+        "formId": "travel-application",
+        "revision": 4,
+        "action": {
+            "actionId": "submit-trip",
+            "sourceComponentId": "trip-submit-button",
+        },
+        "data": {"destination": {"countryCode": "CN", "cityId": "sha"}},
+    }
+    valid_submit_success = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-submit-001",
+        "formId": "travel-application",
+        "status": "success",
+        "result": {"submissionId": "submission-01J2ABC"},
+    }
+    valid_resolve_error = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-resolve-001",
+        "formKey": "travel-application",
+        "status": "error",
+        "errors": [
+            {
+                "code": "CLIENT_CAPABILITY_MISMATCH",
+                "message": "客户端能力不足",
+                "retryable": False,
+            }
+        ],
+    }
+
+    invalid_messages = []
+
+    missing_idempotency_key = dict(valid_submit_request)
+    missing_idempotency_key.pop("idempotencyKey")
+    invalid_messages.append(missing_idempotency_key)
+
+    missing_result = dict(valid_submit_success)
+    missing_result.pop("result")
+    invalid_messages.append(missing_result)
+
+    missing_submission_id = dict(valid_submit_success)
+    missing_submission_id["result"] = {"message": "提交成功"}
+    invalid_messages.append(missing_submission_id)
+
+    submit_error_shape_used_for_resolve = dict(valid_resolve_error)
+    submit_error_shape_used_for_resolve.pop("formKey")
+    submit_error_shape_used_for_resolve["formId"] = "invented-form-id"
+
+    missing_resolve_errors = dict(valid_resolve_error)
+    missing_resolve_errors.pop("errors")
+    invalid_messages.append(missing_resolve_errors)
+
+    assert not list(validator.iter_errors(valid_submit_request))
+    assert not list(validator.iter_errors(valid_submit_success))
+    assert not list(validator.iter_errors(valid_resolve_error))
+    assert list(resolve_error_validator.iter_errors(submit_error_shape_used_for_resolve))
+    for message in invalid_messages:
+        assert list(validator.iter_errors(message)), message
