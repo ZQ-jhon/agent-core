@@ -10,6 +10,15 @@ API 消息 Schema：[`schema/a2ui-api-v1.schema.json`](schema/a2ui-api-v1.schema
 
 本文定义项目本地的 **A2UI Form Profile v1**。它借鉴 A2UI 的声明式 UI、稳定组件标识、数据绑定和受控 action 思想，但为了首期 REST 下发、表单渲染与提交场景，使用一份完整快照而不是增量 JSONL 消息。
 
+本 Profile 服务于 Agent 当前任务：每次 resolve 应下发**最小、聚焦、可立即完成**的字段集合，而不是复用静态全量资料表。生产者必须遵循：
+
+- 单字段修改只包含目标字段和完成动作，不重复索取无关资料；
+- 条件化资料补全通过现有白名单规则显示、禁用或清空必要字段；
+- 申请或预约只收集完成当前动作所必需且有明确约束的字段；
+- 可编辑字段超过 7 个时应拆成多个任务/表单；确因原子业务动作不可拆分时，必须在产品评审材料中说明，协议本身不新增或执行该业务解释。
+
+上述约束是文档生产策略，不是 `Form` 或输入组件的通用 prop。renderer 不负责猜测业务相关性，服务端/Agent 生产者负责选择最小组件树。
+
 本协议不是 Google A2UI v0.9.1/v1.0 的线级兼容实现。官方 v1.0 仍是 Candidate；后续若接入官方 renderer，应新增独立 adapter，不得在同一 `schemaVersion` 下悄悄改变报文。参考：[A2UI 版本状态](https://a2ui.org/)与[官方协议概览](https://a2ui.org/concepts/overview/)。
 
 v1 包含：
@@ -165,6 +174,7 @@ interface UploadValue {
 {
   "schemaVersion": "1.0.0",
   "requestId": "req-submit-001",
+  "idempotencyKey": "idem-submit-01J2ABC",
   "formId": "travel-application",
   "revision": 4,
   "action": {
@@ -181,6 +191,7 @@ interface UploadValue {
 提交规则：
 
 - path 中的 `{formId}` 必须与 body 一致；
+- `idempotencyKey` 必填，由客户端为一次逻辑提交生成；`requestId` 只用于追踪，重试时可以变化；
 - `actionId` 必须存在且类型为 `submit`，`sourceComponentId` 必须引用绑定该 action 的组件；
 - `revision` 必须仍有效；
 - 服务端重新执行类型、枚举、字段和业务校验；
@@ -200,6 +211,8 @@ interface UploadValue {
   }
 }
 ```
+
+`result` 与 `result.submissionId` 均为必填。同一幂等提交的成功回放必须返回首次提交相同的 `submissionId` 和 JSON 深度等价的 `result`；允许使用新的 `requestId` 回显本次重试链路。
 
 ### 6.4 字段错误响应
 
@@ -226,9 +239,31 @@ interface UploadValue {
 
 `fieldErrors` 的 key 必须是提交数据的绝对 JSON Pointer。客户端按 `dataPath` 映射到字段，聚焦首个可见错误，并在表单顶部提供错误摘要。无法映射的字段错误仍放入摘要，不得丢弃。
 
+### 6.5 resolve 错误响应
+
+resolve 尚未产生 `formId`，因此使用独立包络，并以请求中的 `formKey` 关联：
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "requestId": "req-resolve-001",
+  "formKey": "travel-application",
+  "status": "error",
+  "errors": [
+    {
+      "code": "CLIENT_CAPABILITY_MISMATCH",
+      "message": "客户端不支持完成该任务所需的组件",
+      "retryable": false
+    }
+  ]
+}
+```
+
+该包络用于 resolve 的所有非成功响应，不得填充虚构 `formId`，也不得复用 submit 通用错误模型。
+
 ## 7. 错误包络与状态码
 
-非字段错误统一为：
+submit 的非字段错误统一为：
 
 ```json
 {
@@ -251,7 +286,7 @@ interface UploadValue {
 | `400` | `REQUEST_INVALID`、`SCHEMA_INVALID` |
 | `401` / `403` | `UNAUTHENTICATED`、`FORBIDDEN` |
 | `404` | `FORM_NOT_FOUND`、`ENDPOINT_NOT_FOUND` |
-| `409` | `FORM_REVISION_CONFLICT`、`SUBMISSION_CONFLICT` |
+| `409` | `FORM_REVISION_CONFLICT`、`IDEMPOTENCY_CONFLICT`、`SUBMISSION_IN_PROGRESS` |
 | `422` | `VALIDATION_FAILED`、`CLIENT_CAPABILITY_MISMATCH` |
 | `429` | `RATE_LIMITED` |
 | `500` / `503` | `INTERNAL_ERROR`、`DEPENDENCY_UNAVAILABLE` |
@@ -265,8 +300,9 @@ interface UploadValue {
 5. 构建初始数据，再计算一次联动状态。
 6. 渲染组件并绑定字段；单个非关键子组件失败时显示降级占位。
 7. 用户编辑时仅执行匹配 `sourceDataPath` 的白名单规则，然后执行可见且启用字段的同步校验。
-8. 触发 submit 时先做客户端校验，再提交完整数据；服务端是最终裁决者。
-9. 将字段错误按 JSON Pointer 映射回组件；通用错误显示在 Form 错误摘要。
+8. 触发 submit 时先做客户端校验，为逻辑提交创建 `idempotencyKey`，再提交完整数据；安全重试复用该 key，服务端是最终裁决者。
+9. 服务端先原子登记幂等键和规范化请求指纹，再执行写入并持久化可回放结果；具体规则见 `validation-and-actions-v1.md`。
+10. 将字段错误按 JSON Pointer 映射回组件；通用错误显示在 Form 错误摘要。
 
 ## 9. 完整性约束
 

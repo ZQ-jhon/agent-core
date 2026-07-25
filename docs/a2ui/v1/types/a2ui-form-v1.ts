@@ -286,9 +286,26 @@ export interface FormResolveRequestV1 {
   };
 }
 
+export interface GeneralErrorV1 {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface FormResolveErrorV1 {
+  schemaVersion: typeof A2UI_FORM_SCHEMA_VERSION;
+  requestId: StableId;
+  formKey: StableId;
+  status: "error";
+  errors: GeneralErrorV1[];
+}
+
+export type FormResolveResponseV1 = A2UIFormDocumentV1 | FormResolveErrorV1;
+
 export interface FormSubmitRequestV1 {
   schemaVersion: typeof A2UI_FORM_SCHEMA_VERSION;
   requestId: StableId;
+  idempotencyKey: StableId;
   formId: StableId;
   revision: number;
   action: { actionId: StableId; sourceComponentId: StableId };
@@ -308,7 +325,7 @@ export type FormSubmitResponseV1 =
       requestId: StableId;
       formId: StableId;
       status: "success";
-      result?: { message?: string; submissionId?: string };
+      result: { submissionId: StableId; message?: string };
     }
   | {
       schemaVersion: typeof A2UI_FORM_SCHEMA_VERSION;
@@ -316,12 +333,12 @@ export type FormSubmitResponseV1 =
       formId: StableId;
       status: "validation_error";
       fieldErrors: Record<DataPath, FieldErrorV1[]>;
-      errors?: Array<{ code: string; message: string; retryable: boolean }>;
+      errors?: GeneralErrorV1[];
     }
   | {
       schemaVersion: typeof A2UI_FORM_SCHEMA_VERSION;
       requestId: StableId;
       formId: StableId;
       status: "error";
-      errors: Array<{ code: string; message: string; retryable: boolean }>;
+      errors: GeneralErrorV1[];
     };

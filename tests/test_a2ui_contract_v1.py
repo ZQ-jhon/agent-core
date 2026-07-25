@@ -16,7 +16,7 @@ EXAMPLES_PATH = ROOT / "docs/a2ui/v1/form-examples-v1.json"
 TYPES_PATH = ROOT / "docs/a2ui/v1/types/a2ui-form-v1.ts"
 
 EXPECTED_EXAMPLES = {
-    "basic-application",
+    "single-field-update",
     "conditional-application",
     "remote-options-application",
 }
@@ -206,6 +206,33 @@ def test_examples_do_not_contain_executable_configuration() -> None:
     visit(examples)
 
 
+def test_examples_are_minimal_and_cover_agent_task_shapes() -> None:
+    _, examples = load_contract()
+    examples_by_id = {example["formId"]: example for example in examples}
+
+    editable_counts = {
+        form_id: sum(
+            node["type"] in INPUT_TYPES
+            for node in walk_nodes(example["root"])
+        )
+        for form_id, example in examples_by_id.items()
+    }
+    assert editable_counts["single-field-update"] == 1
+    assert all(count <= 7 for count in editable_counts.values())
+
+    conditional = examples_by_id["conditional-application"]
+    assert conditional["rules"]
+    assert any(
+        effect["type"] in {"setVisible", "setDisabled", "setValue"}
+        for rule in conditional["rules"]
+        for effect in rule["then"] + rule.get("else", [])
+    )
+
+    remote = examples_by_id["remote-options-application"]
+    assert remote["dataSources"]
+    assert any(source["type"] == "remoteOptions" for source in remote["dataSources"])
+
+
 def test_schema_types_and_examples_share_the_same_catalog() -> None:
     schema, examples = load_contract()
     typescript = TYPES_PATH.read_text(encoding="utf-8")
@@ -224,6 +251,9 @@ def test_schema_types_and_examples_share_the_same_catalog() -> None:
     assert schema_types == example_types
     assert schema["properties"]["schemaVersion"]["const"] == "1.0.0"
     assert 'A2UI_FORM_SCHEMA_VERSION = "1.0.0"' in typescript
+    assert "export interface FormResolveErrorV1" in typescript
+    assert "idempotencyKey: StableId;" in typescript
+    assert "result: { submissionId: StableId;" in typescript
     for component_type in schema_types:
         assert f'"{component_type}"' in typescript
         assert f"### {component_type}" in catalog
@@ -249,6 +279,7 @@ def test_api_message_examples_match_api_schema() -> None:
         {
             "schemaVersion": "1.0.0",
             "requestId": "req-submit-001",
+            "idempotencyKey": "idem-submit-01J2ABC",
             "formId": "travel-application",
             "revision": 4,
             "action": {
@@ -257,6 +288,19 @@ def test_api_message_examples_match_api_schema() -> None:
             },
             "data": {"destination": {"countryCode": "CN", "cityId": "sha"}},
             "client": {"locale": "zh-CN", "timeZone": "Asia/Shanghai"},
+        },
+        {
+            "schemaVersion": "1.0.0",
+            "requestId": "req-resolve-001",
+            "formKey": "travel-application",
+            "status": "error",
+            "errors": [
+                {
+                    "code": "CLIENT_CAPABILITY_MISMATCH",
+                    "message": "客户端能力不足",
+                    "retryable": False,
+                }
+            ],
         },
         {
             "schemaVersion": "1.0.0",
@@ -302,3 +346,77 @@ def test_api_message_examples_match_api_schema() -> None:
     for message in messages:
         errors = list(validator.iter_errors(message))
         assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_api_schema_rejects_ambiguous_resolve_and_submit_messages() -> None:
+    api_schema = json.loads(API_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(api_schema, format_checker=FormatChecker())
+    resolve_error_validator = Draft202012Validator(
+        {
+            "$ref": "#/$defs/formResolveError",
+            "$defs": api_schema["$defs"],
+        },
+        format_checker=FormatChecker(),
+    )
+
+    valid_submit_request = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-submit-001",
+        "idempotencyKey": "idem-submit-01J2ABC",
+        "formId": "travel-application",
+        "revision": 4,
+        "action": {
+            "actionId": "submit-trip",
+            "sourceComponentId": "trip-submit-button",
+        },
+        "data": {"destination": {"countryCode": "CN", "cityId": "sha"}},
+    }
+    valid_submit_success = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-submit-001",
+        "formId": "travel-application",
+        "status": "success",
+        "result": {"submissionId": "submission-01J2ABC"},
+    }
+    valid_resolve_error = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-resolve-001",
+        "formKey": "travel-application",
+        "status": "error",
+        "errors": [
+            {
+                "code": "CLIENT_CAPABILITY_MISMATCH",
+                "message": "客户端能力不足",
+                "retryable": False,
+            }
+        ],
+    }
+
+    invalid_messages = []
+
+    missing_idempotency_key = dict(valid_submit_request)
+    missing_idempotency_key.pop("idempotencyKey")
+    invalid_messages.append(missing_idempotency_key)
+
+    missing_result = dict(valid_submit_success)
+    missing_result.pop("result")
+    invalid_messages.append(missing_result)
+
+    missing_submission_id = dict(valid_submit_success)
+    missing_submission_id["result"] = {"message": "提交成功"}
+    invalid_messages.append(missing_submission_id)
+
+    submit_error_shape_used_for_resolve = dict(valid_resolve_error)
+    submit_error_shape_used_for_resolve.pop("formKey")
+    submit_error_shape_used_for_resolve["formId"] = "invented-form-id"
+
+    missing_resolve_errors = dict(valid_resolve_error)
+    missing_resolve_errors.pop("errors")
+    invalid_messages.append(missing_resolve_errors)
+
+    assert not list(validator.iter_errors(valid_submit_request))
+    assert not list(validator.iter_errors(valid_submit_success))
+    assert not list(validator.iter_errors(valid_resolve_error))
+    assert list(resolve_error_validator.iter_errors(submit_error_shape_used_for_resolve))
+    for message in invalid_messages:
+        assert list(validator.iter_errors(message)), message

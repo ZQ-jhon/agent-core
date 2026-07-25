@@ -129,7 +129,15 @@ v1 仅支持：
 
 执行顺序：确认对话框（若配置）→ 客户端同步校验 → 防重复锁 → 构造提交包络 → 宿主解析 endpoint → 发送 → 映射响应 → 解锁。
 
-同一 action 在请求未结束时不能再次执行。网络错误只在确认请求未到达服务端或服务端提供幂等语义时自动重试；建议服务端将 `requestId` 作为幂等键。
+同一 action 在请求未结束时不能由同一 renderer 重复触发。网络错误、超时或响应丢失后的自动/人工重试必须遵循以下幂等契约：
+
+1. 客户端在首次发送前为一次**逻辑提交**生成必填 `idempotencyKey`，并保存到收到终态响应；同一逻辑提交的所有重试复用该 key，`requestId` 仅标识每次传输链路。用户修改数据、选择另一 submit action 或明确发起新提交时必须生成新 key。
+2. key 的服务端作用域固定为“认证主体 + `formId` + `revision` + `action.actionId`”。不同认证主体之间不得共享幂等记录，`sourceComponentId` 进入请求指纹但不扩大作用域。
+3. 规范化请求是严格模型解析后的 `{schemaVersion, formId, revision, action, data}`。对象键递归按 Unicode 码点排序，数组顺序保留，字符串保持原值，数字使用 JSON 最短十进制表示，序列化不含无意义空白；`requestId`、`idempotencyKey` 和展示提示 `client` 不进入指纹。
+4. 服务端必须在执行任何业务副作用前原子创建或读取 `(scope, idempotencyKey)` 记录，并保存规范化请求指纹。记录不存在时仅一个执行者可取得所有权；同 key、同指纹的并发请求不得重复执行副作用。
+5. 已有同 key、同指纹且已完成的记录直接回放已持久化的 HTTP 状态和响应体。成功回放的 `submissionId` 必须与首次响应相同，`result` 必须 JSON 深度等价；响应中的 `requestId` 可以回显当前重试请求，且不影响业务结果等价性。
+6. 已有同 key 但指纹不同返回 HTTP `409`、`IDEMPOTENCY_CONFLICT`、`retryable: false`，不得覆盖记录或执行 action。已有同 key、同指纹但仍在处理时返回 HTTP `409`、`SUBMISSION_IN_PROGRESS`、`retryable: true`；客户端稍后仍使用同一 key 重试。
+7. 业务写入与成功结果/`submissionId` 的幂等记录必须在同一原子事务中提交；若副作用位于外部系统，适配器必须使用同一业务幂等键或事务 outbox，保证崩溃恢复后可重建并回放唯一结果。未发生副作用的可重试基础设施错误不得永久固化为成功记录。
 
 ### 5.2 reset
 
@@ -221,6 +229,6 @@ query source：
 
 ## 8. 服务端复核清单
 
-提交处理必须按顺序检查：认证/权限 → 包络/版本 → formId/revision → action/source 绑定 → 数据类型与允许路径 → 字段 validator → 远程 option 合法性 → 上传文件所有权 → 业务校验 → 幂等写入。
+提交处理必须按顺序检查：认证/权限 → 包络/版本 → formId/revision → action/source 绑定 → 幂等作用域与规范化指纹 → 原子登记/回放判定 → 数据类型与允许路径 → 字段 validator → 远程 option 合法性 → 上传文件所有权 → 业务校验 → 原子业务写入与结果持久化。
 
 服务端不得把客户端未声明的数据键自动透传到持久层。建议以当前 revision 的字段白名单投影提交数据，对未知键返回 `REQUEST_INVALID` 或显式忽略并记录安全事件；本项目 v1 采用“拒绝未知键”。
