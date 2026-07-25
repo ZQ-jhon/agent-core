@@ -1,0 +1,553 @@
+{
+  "examples": [
+    {
+      "schemaVersion": "1.0.0",
+      "requestId": "req-basic-001",
+      "formId": "basic-application",
+      "revision": 1,
+      "generatedAt": "2026-07-25T10:00:00Z",
+      "root": {
+        "id": "basic-form",
+        "type": "Form",
+        "props": {
+          "title": "基础申请表",
+          "description": "填写申请人信息并提交。"
+        },
+        "children": [
+          {
+            "id": "basic-personal-section",
+            "type": "Section",
+            "props": { "title": "申请人信息" },
+            "children": [
+              {
+                "id": "basic-full-name",
+                "type": "TextInput",
+                "props": {
+                  "label": "姓名",
+                  "placeholder": "请输入姓名",
+                  "autoComplete": "name"
+                },
+                "children": [],
+                "dataPath": "/applicant/fullName",
+                "validation": [
+                  { "type": "required", "message": "请输入姓名" },
+                  { "type": "maxLength", "value": 80, "message": "姓名不能超过 80 个字符" }
+                ]
+              },
+              {
+                "id": "basic-email",
+                "type": "TextInput",
+                "props": {
+                  "label": "邮箱",
+                  "placeholder": "name@example.com",
+                  "inputMode": "email",
+                  "autoComplete": "email"
+                },
+                "children": [],
+                "dataPath": "/applicant/email",
+                "validation": [
+                  { "type": "required", "message": "请输入邮箱" },
+                  {
+                    "type": "pattern",
+                    "value": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+                    "message": "邮箱格式不正确"
+                  }
+                ]
+              },
+              {
+                "id": "basic-age",
+                "type": "NumberInput",
+                "props": {
+                  "label": "年龄",
+                  "step": 1,
+                  "unit": "岁"
+                },
+                "children": [],
+                "dataPath": "/applicant/age",
+                "validation": [
+                  { "type": "integer", "message": "年龄必须为整数" },
+                  { "type": "minimum", "value": 18, "message": "年龄不能小于 18 岁" },
+                  { "type": "maximum", "value": 120, "message": "年龄不能超过 120 岁" }
+                ]
+              },
+              {
+                "id": "basic-application-type",
+                "type": "Select",
+                "props": {
+                  "label": "申请类型",
+                  "placeholder": "请选择",
+                  "options": [
+                    { "label": "个人", "value": "individual" },
+                    { "label": "企业", "value": "business" }
+                  ]
+                },
+                "children": [],
+                "dataPath": "/application/type",
+                "validation": [
+                  { "type": "required", "message": "请选择申请类型" }
+                ]
+              },
+              {
+                "id": "basic-skills",
+                "type": "CheckboxGroup",
+                "props": {
+                  "label": "关注方向",
+                  "orientation": "horizontal",
+                  "options": [
+                    { "label": "Web", "value": "web" },
+                    { "label": "移动端", "value": "mobile" },
+                    { "label": "桌面端", "value": "desktop" }
+                  ]
+                },
+                "children": [],
+                "dataPath": "/application/interests",
+                "validation": [
+                  { "type": "minItems", "value": 1, "message": "至少选择一个方向" }
+                ]
+              },
+              {
+                "id": "basic-notes",
+                "type": "TextArea",
+                "props": {
+                  "label": "补充说明",
+                  "placeholder": "选填",
+                  "rows": 4
+                },
+                "children": [],
+                "dataPath": "/application/notes",
+                "validation": [
+                  { "type": "maxLength", "value": 500, "message": "补充说明不能超过 500 个字符" }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "basic-actions",
+            "type": "Section",
+            "props": { "title": "操作" },
+            "children": [
+              {
+                "id": "basic-reset",
+                "type": "Button",
+                "props": { "label": "重置", "variant": "secondary" },
+                "children": [],
+                "action": { "actionId": "reset-basic" }
+              },
+              {
+                "id": "basic-submit",
+                "type": "Button",
+                "props": {
+                  "label": "提交申请",
+                  "variant": "primary",
+                  "loadingLabel": "提交中…"
+                },
+                "children": [],
+                "action": { "actionId": "submit-basic" }
+              }
+            ]
+          }
+        ]
+      },
+      "data": {
+        "initialValues": {
+          "applicant": { "fullName": "", "email": "", "age": null },
+          "application": { "type": null, "interests": [], "notes": "" }
+        }
+      },
+      "actions": [
+        { "id": "reset-basic", "type": "reset" },
+        {
+          "id": "submit-basic",
+          "type": "submit",
+          "endpointKey": "forms.submit",
+          "method": "POST",
+          "timeoutMs": 15000
+        }
+      ],
+      "meta": { "locale": "zh-CN", "title": "基础申请表示例" }
+    },
+    {
+      "schemaVersion": "1.0.0",
+      "requestId": "req-linked-001",
+      "formId": "conditional-application",
+      "revision": 3,
+      "generatedAt": "2026-07-25T10:05:00Z",
+      "root": {
+        "id": "linked-form",
+        "type": "Form",
+        "props": {
+          "title": "带校验与联动的访问申请",
+          "description": "根据人员类型显示并启用对应字段。"
+        },
+        "children": [
+          {
+            "id": "linked-notice",
+            "type": "Alert",
+            "props": {
+              "title": "填写提示",
+              "message": "外部协作人员必须填写所属公司。",
+              "variant": "info"
+            },
+            "children": []
+          },
+          {
+            "id": "linked-policy",
+            "type": "Markdown",
+            "props": {
+              "content": "提交即表示你已阅读并同意 **访问管理规范**。",
+              "ariaLabel": "访问管理规范说明"
+            },
+            "children": []
+          },
+          {
+            "id": "linked-identity-section",
+            "type": "Section",
+            "props": { "title": "身份信息" },
+            "children": [
+              {
+                "id": "linked-person-type",
+                "type": "RadioGroup",
+                "props": {
+                  "label": "人员类型",
+                  "orientation": "horizontal",
+                  "options": [
+                    { "label": "内部员工", "value": "employee" },
+                    { "label": "外部协作", "value": "contractor" }
+                  ]
+                },
+                "children": [],
+                "dataPath": "/identity/personType",
+                "validation": [
+                  { "type": "required", "message": "请选择人员类型" }
+                ]
+              },
+              {
+                "id": "linked-company",
+                "type": "TextInput",
+                "props": {
+                  "label": "所属公司",
+                  "placeholder": "请输入公司全称",
+                  "visible": false,
+                  "disabled": true
+                },
+                "children": [],
+                "dataPath": "/identity/companyName",
+                "validation": [
+                  { "type": "required", "message": "请输入所属公司" },
+                  { "type": "maxLength", "value": 120, "message": "公司名称不能超过 120 个字符" }
+                ]
+              },
+              {
+                "id": "linked-email",
+                "type": "TextInput",
+                "props": {
+                  "label": "工作邮箱",
+                  "inputMode": "email",
+                  "autoComplete": "email"
+                },
+                "children": [],
+                "dataPath": "/identity/workEmail",
+                "validation": [
+                  { "type": "required", "message": "请输入工作邮箱" },
+                  {
+                    "type": "pattern",
+                    "value": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+                    "message": "邮箱格式不正确"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "linked-access-section",
+            "type": "Section",
+            "props": { "title": "访问范围" },
+            "children": [
+              {
+                "id": "linked-start-date",
+                "type": "DatePicker",
+                "props": {
+                  "label": "开始日期",
+                  "minDate": "2026-07-25",
+                  "maxDate": "2027-07-25"
+                },
+                "children": [],
+                "dataPath": "/access/startDate",
+                "validation": [
+                  { "type": "required", "message": "请选择开始日期" }
+                ]
+              },
+              {
+                "id": "linked-access-level",
+                "type": "Select",
+                "props": {
+                  "label": "访问级别",
+                  "options": [
+                    { "label": "只读", "value": "read" },
+                    { "label": "编辑", "value": "write" }
+                  ]
+                },
+                "children": [],
+                "dataPath": "/access/level",
+                "validation": [
+                  { "type": "required", "message": "请选择访问级别" }
+                ]
+              },
+              {
+                "id": "linked-notify",
+                "type": "Switch",
+                "props": {
+                  "label": "接收审批进度通知",
+                  "onLabel": "接收",
+                  "offLabel": "不接收"
+                },
+                "children": [],
+                "dataPath": "/preferences/notify"
+              }
+            ]
+          },
+          {
+            "id": "linked-submit",
+            "type": "Button",
+            "props": { "label": "提交访问申请", "variant": "primary" },
+            "children": [],
+            "action": {
+              "actionId": "submit-linked",
+              "confirm": {
+                "title": "确认提交",
+                "message": "请确认填写信息准确无误。",
+                "confirmLabel": "确认",
+                "cancelLabel": "返回检查"
+              }
+            }
+          }
+        ]
+      },
+      "data": {
+        "initialValues": {
+          "identity": {
+            "personType": "employee",
+            "companyName": null,
+            "workEmail": ""
+          },
+          "access": { "startDate": null, "level": null },
+          "preferences": { "notify": true }
+        }
+      },
+      "actions": [
+        {
+          "id": "submit-linked",
+          "type": "submit",
+          "endpointKey": "forms.submit",
+          "method": "POST"
+        }
+      ],
+      "rules": [
+        {
+          "id": "show-contractor-company",
+          "event": "change",
+          "sourceDataPath": "/identity/personType",
+          "when": {
+            "op": "equals",
+            "path": "/identity/personType",
+            "value": "contractor"
+          },
+          "then": [
+            {
+              "type": "setVisible",
+              "targetComponentId": "linked-company",
+              "value": true
+            },
+            {
+              "type": "setDisabled",
+              "targetComponentId": "linked-company",
+              "value": false
+            }
+          ],
+          "else": [
+            {
+              "type": "setVisible",
+              "targetComponentId": "linked-company",
+              "value": false
+            },
+            {
+              "type": "setDisabled",
+              "targetComponentId": "linked-company",
+              "value": true
+            },
+            {
+              "type": "setValue",
+              "targetDataPath": "/identity/companyName",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "meta": { "locale": "zh-CN", "title": "校验与联动示例" }
+    },
+    {
+      "schemaVersion": "1.0.0",
+      "requestId": "req-remote-001",
+      "formId": "remote-options-application",
+      "revision": 2,
+      "generatedAt": "2026-07-25T10:10:00Z",
+      "root": {
+        "id": "remote-form",
+        "type": "Form",
+        "props": {
+          "title": "差旅申请",
+          "description": "城市选项由后端白名单数据源提供。"
+        },
+        "children": [
+          {
+            "id": "remote-trip-section",
+            "type": "Section",
+            "props": { "title": "行程信息" },
+            "children": [
+              {
+                "id": "remote-country",
+                "type": "Select",
+                "props": {
+                  "label": "国家或地区",
+                  "options": [
+                    { "label": "中国", "value": "CN" },
+                    { "label": "新加坡", "value": "SG" },
+                    { "label": "日本", "value": "JP" }
+                  ]
+                },
+                "children": [],
+                "dataPath": "/destination/countryCode",
+                "validation": [
+                  { "type": "required", "message": "请选择国家或地区" }
+                ]
+              },
+              {
+                "id": "remote-city",
+                "type": "Select",
+                "props": {
+                  "label": "目的城市",
+                  "placeholder": "输入至少 2 个字符搜索",
+                  "dataSourceId": "cities-source"
+                },
+                "children": [],
+                "dataPath": "/destination/cityId",
+                "validation": [
+                  { "type": "required", "message": "请选择目的城市" }
+                ]
+              },
+              {
+                "id": "remote-departure-date",
+                "type": "DatePicker",
+                "props": {
+                  "label": "出发日期",
+                  "minDate": "2026-07-25",
+                  "maxDate": "2027-07-25"
+                },
+                "children": [],
+                "dataPath": "/trip/departureDate",
+                "validation": [
+                  { "type": "required", "message": "请选择出发日期" }
+                ]
+              },
+              {
+                "id": "remote-purpose",
+                "type": "TextArea",
+                "props": {
+                  "label": "出差事由",
+                  "rows": 4,
+                  "placeholder": "说明出差目的"
+                },
+                "children": [],
+                "dataPath": "/trip/purpose",
+                "validation": [
+                  { "type": "required", "message": "请输入出差事由" },
+                  { "type": "minLength", "value": 10, "message": "出差事由至少 10 个字符" }
+                ]
+              },
+              {
+                "id": "remote-attachments",
+                "type": "Upload",
+                "props": {
+                  "label": "附件",
+                  "helpText": "仅上传审批所需的 PDF 或图片。",
+                  "accept": ["application/pdf", "image/png", "image/jpeg"],
+                  "maxFiles": 3,
+                  "maxSizeBytes": 10485760,
+                  "buttonLabel": "选择文件"
+                },
+                "children": [],
+                "dataPath": "/trip/attachments",
+                "action": { "actionId": "upload-trip-file" },
+                "validation": [
+                  { "type": "maxItems", "value": 3, "message": "最多上传 3 个文件" }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "remote-submit",
+            "type": "Button",
+            "props": { "label": "提交差旅申请", "variant": "primary" },
+            "children": [],
+            "action": { "actionId": "submit-trip" }
+          }
+        ]
+      },
+      "data": {
+        "initialValues": {
+          "destination": { "countryCode": "CN", "cityId": null },
+          "trip": {
+            "departureDate": null,
+            "purpose": "",
+            "attachments": []
+          }
+        }
+      },
+      "actions": [
+        {
+          "id": "upload-trip-file",
+          "type": "upload",
+          "endpointKey": "files.upload",
+          "method": "POST",
+          "fieldName": "file",
+          "timeoutMs": 30000
+        },
+        {
+          "id": "submit-trip",
+          "type": "submit",
+          "endpointKey": "forms.submit",
+          "method": "POST"
+        }
+      ],
+      "dataSources": [
+        {
+          "id": "cities-source",
+          "type": "remoteOptions",
+          "endpointKey": "locations.cities",
+          "method": "GET",
+          "query": [
+            {
+              "name": "countryCode",
+              "source": { "kind": "data", "path": "/destination/countryCode" }
+            },
+            {
+              "name": "q",
+              "source": { "kind": "searchText" }
+            }
+          ],
+          "response": {
+            "itemsPath": "/items",
+            "labelPath": "/name",
+            "valuePath": "/id",
+            "disabledPath": "/disabled"
+          },
+          "dependsOn": ["/destination/countryCode"],
+          "debounceMs": 300,
+          "minQueryLength": 2,
+          "cacheTtlSeconds": 300
+        }
+      ],
+      "meta": { "locale": "zh-CN", "title": "远程选项示例" }
+    }
+  ]
+}
