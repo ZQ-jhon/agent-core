@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from copy import deepcopy
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ SCHEMA_PATH = ROOT / "docs/a2ui/v1/schema/a2ui-form-v1.schema.json"
 API_SCHEMA_PATH = ROOT / "docs/a2ui/v1/schema/a2ui-api-v1.schema.json"
 EXAMPLES_PATH = ROOT / "docs/a2ui/v1/form-examples-v1.json"
 TYPES_PATH = ROOT / "docs/a2ui/v1/types/a2ui-form-v1.ts"
+VALIDATION_PATH = ROOT / "docs/a2ui/v1/validation-and-actions-v1.md"
 
 EXPECTED_EXAMPLES = {
     "single-field-update",
@@ -174,13 +176,6 @@ def test_examples_have_valid_references_and_data_bindings() -> None:
                     )
         assert_acyclic(set_value_graph)
 
-        for source in data_sources.values():
-            for dependency in source.get("dependsOn", []):
-                resolve_pointer(initial_values, dependency)
-            for query in source["query"]:
-                if query["source"]["kind"] == "data":
-                    resolve_pointer(initial_values, query["source"]["path"])
-
 
 def test_examples_do_not_contain_executable_configuration() -> None:
     _, examples = load_contract()
@@ -233,9 +228,90 @@ def test_examples_are_minimal_and_cover_agent_task_shapes() -> None:
     assert any(source["type"] == "remoteOptions" for source in remote["dataSources"])
 
 
+def test_remote_options_execution_semantics_are_registry_owned() -> None:
+    schema, examples = load_contract()
+    remote_definition = schema["$defs"]["remoteOptionsSource"]
+    forbidden_execution_fields = {
+        "method",
+        "query",
+        "response",
+        "dependsOn",
+        "debounceMs",
+        "minQueryLength",
+        "cacheTtlSeconds",
+    }
+
+    assert remote_definition["required"] == ["id", "type", "endpointKey"]
+    assert set(remote_definition["properties"]) == {"id", "type", "endpointKey"}
+
+    remote_example = next(
+        example
+        for example in examples
+        if example["formId"] == "remote-options-application"
+    )
+    source = remote_example["dataSources"][0]
+    assert source["endpointKey"] == "locations.cities"
+    assert forbidden_execution_fields.isdisjoint(source)
+
+    mismatched_schema_configs = [
+        {
+            "query": [
+                {
+                    "name": "unregisteredCountryParam",
+                    "source": {
+                        "kind": "data",
+                        "path": "/destination/countryCode",
+                    },
+                }
+            ]
+        },
+        {
+            "query": [
+                {
+                    "name": "countryCode",
+                    "source": {
+                        "kind": "data",
+                        "path": "/unapproved/source/path",
+                    },
+                }
+            ]
+        },
+        {
+            "response": {
+                "itemsPath": "/unexpected/items",
+                "labelPath": "/display",
+                "valuePath": "/key",
+            }
+        },
+    ]
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    for mismatch in mismatched_schema_configs:
+        invalid_document = deepcopy(remote_example)
+        invalid_document["dataSources"][0].update(mismatch)
+        assert list(validator.iter_errors(invalid_document)), mismatch
+
+
+def test_completed_idempotent_replay_precedes_current_revision_validation() -> None:
+    contract = VALIDATION_PATH.read_text(encoding="utf-8")
+    ordered_markers = [
+        "认证/授权、严格包络解析以及 path/body 一致性校验",
+        "原子查询记录并比较规范化请求指纹",
+        "已有同 key、同指纹且已完成的记录必须直接回放",
+        "仅在记录不存在时，服务端才校验当前 revision、action、source 绑定",
+    ]
+    marker_positions = [contract.index(marker) for marker in ordered_markers]
+
+    assert marker_positions == sorted(marker_positions)
+    assert "客户端以 rev4 成功提交但响应丢失，随后表单升为 rev5" in contract
+    assert "回放 rev4 已持久化的响应" in contract
+
+
 def test_schema_types_and_examples_share_the_same_catalog() -> None:
     schema, examples = load_contract()
     typescript = TYPES_PATH.read_text(encoding="utf-8")
+    remote_options_type = typescript.partition(
+        "export interface RemoteOptionsSource {"
+    )[2].partition("}\n")[0]
     catalog = (ROOT / "docs/a2ui/v1/component-catalog-v1.md").read_text(
         encoding="utf-8"
     )
@@ -254,6 +330,15 @@ def test_schema_types_and_examples_share_the_same_catalog() -> None:
     assert "export interface FormResolveErrorV1" in typescript
     assert "idempotencyKey: StableId;" in typescript
     assert "result: { submissionId: StableId;" in typescript
+    assert {
+        line.strip()
+        for line in remote_options_type.splitlines()
+        if line.strip()
+    } == {
+        "id: StableId;",
+        'type: "remoteOptions";',
+        "endpointKey: string;",
+    }
     for component_type in schema_types:
         assert f'"{component_type}"' in typescript
         assert f"### {component_type}" in catalog

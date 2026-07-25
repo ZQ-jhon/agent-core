@@ -479,28 +479,7 @@
         {
           "id": "cities-source",
           "type": "remoteOptions",
-          "endpointKey": "locations.cities",
-          "method": "GET",
-          "query": [
-            {
-              "name": "countryCode",
-              "source": { "kind": "data", "path": "/destination/countryCode" }
-            },
-            {
-              "name": "q",
-              "source": { "kind": "searchText" }
-            }
-          ],
-          "response": {
-            "itemsPath": "/items",
-            "labelPath": "/name",
-            "valuePath": "/id",
-            "disabledPath": "/disabled"
-          },
-          "dependsOn": ["/destination/countryCode"],
-          "debounceMs": 300,
-          "minQueryLength": 2,
-          "cacheTtlSeconds": 300
+          "endpointKey": "locations.cities"
         }
       ],
       "meta": { "locale": "zh-CN", "title": "远程选项与必要约束申请示例" }

@@ -250,27 +250,10 @@ export interface LinkRule {
   else?: RuleEffect[];
 }
 
-export type QuerySource =
-  | { kind: "data"; path: DataPath }
-  | { kind: "searchText" }
-  | { kind: "literal"; value: string | number | boolean };
-
 export interface RemoteOptionsSource {
   id: StableId;
   type: "remoteOptions";
   endpointKey: string;
-  method: "GET";
-  query: Array<{ name: string; source: QuerySource }>;
-  response: {
-    itemsPath: DataPath;
-    labelPath: DataPath;
-    valuePath: DataPath;
-    disabledPath?: DataPath;
-  };
-  dependsOn?: DataPath[];
-  debounceMs?: number;
-  minQueryLength?: number;
-  cacheTtlSeconds?: number;
 }
 
 export interface FormResolveRequestV1 {

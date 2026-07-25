@@ -535,70 +535,14 @@
         }
       ]
     },
-    "querySource": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "path"],
-          "properties": {
-            "kind": { "const": "data" },
-            "path": { "$ref": "#/$defs/dataPath" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": { "kind": { "const": "searchText" } }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "value"],
-          "properties": {
-            "kind": { "const": "literal" },
-            "value": { "type": ["string", "number", "boolean"] }
-          }
-        }
-      ]
-    },
     "remoteOptionsSource": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "type", "endpointKey", "method", "query", "response"],
+      "required": ["id", "type", "endpointKey"],
       "properties": {
         "id": { "$ref": "#/$defs/stableId" },
         "type": { "const": "remoteOptions" },
-        "endpointKey": { "$ref": "#/$defs/endpointKey" },
-        "method": { "const": "GET" },
-        "query": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "source"],
-            "properties": {
-              "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$" },
-              "source": { "$ref": "#/$defs/querySource" }
-            }
-          }
-        },
-        "response": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["itemsPath", "labelPath", "valuePath"],
-          "properties": {
-            "itemsPath": { "$ref": "#/$defs/dataPath" },
-            "labelPath": { "$ref": "#/$defs/dataPath" },
-            "valuePath": { "$ref": "#/$defs/dataPath" },
-            "disabledPath": { "$ref": "#/$defs/dataPath" }
-          }
-        },
-        "dependsOn": { "type": "array", "items": { "$ref": "#/$defs/dataPath" }, "uniqueItems": true },
-        "debounceMs": { "type": "integer", "minimum": 0, "maximum": 2000, "default": 300 },
-        "minQueryLength": { "type": "integer", "minimum": 0, "maximum": 20, "default": 0 },
-        "cacheTtlSeconds": { "type": "integer", "minimum": 0, "maximum": 86400, "default": 300 }
+        "endpointKey": { "$ref": "#/$defs/endpointKey" }
       }
     },
     "condition": {

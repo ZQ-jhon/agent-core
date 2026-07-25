@@ -134,10 +134,13 @@ v1 仅支持：
 1. 客户端在首次发送前为一次**逻辑提交**生成必填 `idempotencyKey`，并保存到收到终态响应；同一逻辑提交的所有重试复用该 key，`requestId` 仅标识每次传输链路。用户修改数据、选择另一 submit action 或明确发起新提交时必须生成新 key。
 2. key 的服务端作用域固定为“认证主体 + `formId` + `revision` + `action.actionId`”。不同认证主体之间不得共享幂等记录，`sourceComponentId` 进入请求指纹但不扩大作用域。
 3. 规范化请求是严格模型解析后的 `{schemaVersion, formId, revision, action, data}`。对象键递归按 Unicode 码点排序，数组顺序保留，字符串保持原值，数字使用 JSON 最短十进制表示，序列化不含无意义空白；`requestId`、`idempotencyKey` 和展示提示 `client` 不进入指纹。
-4. 服务端必须在执行任何业务副作用前原子创建或读取 `(scope, idempotencyKey)` 记录，并保存规范化请求指纹。记录不存在时仅一个执行者可取得所有权；同 key、同指纹的并发请求不得重复执行副作用。
-5. 已有同 key、同指纹且已完成的记录直接回放已持久化的 HTTP 状态和响应体。成功回放的 `submissionId` 必须与首次响应相同，`result` 必须 JSON 深度等价；响应中的 `requestId` 可以回显当前重试请求，且不影响业务结果等价性。
-6. 已有同 key 但指纹不同返回 HTTP `409`、`IDEMPOTENCY_CONFLICT`、`retryable: false`，不得覆盖记录或执行 action。已有同 key、同指纹但仍在处理时返回 HTTP `409`、`SUBMISSION_IN_PROGRESS`、`retryable: true`；客户端稍后仍使用同一 key 重试。
-7. 业务写入与成功结果/`submissionId` 的幂等记录必须在同一原子事务中提交；若副作用位于外部系统，适配器必须使用同一业务幂等键或事务 outbox，保证崩溃恢复后可重建并回放唯一结果。未发生副作用的可重试基础设施错误不得永久固化为成功记录。
+4. 服务端处理顺序固定为：认证/授权、严格包络解析以及 path/body 一致性校验后，立即按请求中的 `(认证主体, formId, revision, action.actionId, idempotencyKey)` 原子查询记录并比较规范化请求指纹。严格解析只验证字段形状和 path/body 一致性，此时不得先校验当前 revision、action 或 source 是否仍有效。
+5. 已有同 key、同指纹且已完成的记录必须直接回放已持久化的 HTTP 状态和响应体，即使当前表单已经升版或原 action 已失效。成功回放的 `submissionId` 必须与首次响应相同，`result` 必须 JSON 深度等价；响应中的 `requestId` 可以回显当前重试请求，且不影响业务结果等价性。
+6. 已有同 key 但指纹不同返回 HTTP `409`、`IDEMPOTENCY_KEY_CONFLICT`、`retryable: false`，不得覆盖记录或执行 action。已有同 key、同指纹但仍在处理时返回 HTTP `409`、`SUBMISSION_IN_PROGRESS`、`retryable: true`；客户端稍后仍使用同一 key 重试。
+7. 仅在记录不存在时，服务端才校验当前 revision、action、source 绑定、数据与业务规则，并原子创建记录、保存指纹和取得执行权；过期 revision 此时返回 HTTP `409`、`FORM_REVISION_CONFLICT`。同 key、同指纹的并发请求不得重复执行副作用。
+8. 业务写入与成功结果/`submissionId` 的幂等记录必须在同一原子事务中提交；若副作用位于外部系统，适配器必须使用同一业务幂等键或事务 outbox，保证崩溃恢复后可重建并回放唯一结果。未发生副作用的可重试基础设施错误不得永久固化为成功记录。
+
+必测场景：客户端以 rev4 成功提交但响应丢失，随后表单升为 rev5；客户端携带原 rev4、相同 key 和相同规范化请求重试时，服务端必须回放 rev4 已持久化的响应，而不是返回 `FORM_REVISION_CONFLICT`。
 
 ### 5.2 reset
 
@@ -170,44 +173,22 @@ v1 仅支持：
 {
   "id": "cities-source",
   "type": "remoteOptions",
-  "endpointKey": "locations.cities",
-  "method": "GET",
-  "query": [
-    {
-      "name": "countryCode",
-      "source": { "kind": "data", "path": "/destination/countryCode" }
-    },
-    { "name": "q", "source": { "kind": "searchText" } }
-  ],
-  "response": {
-    "itemsPath": "/items",
-    "labelPath": "/name",
-    "valuePath": "/id",
-    "disabledPath": "/disabled"
-  },
-  "dependsOn": ["/destination/countryCode"],
-  "debounceMs": 300,
-  "minQueryLength": 2,
-  "cacheTtlSeconds": 300
+  "endpointKey": "locations.cities"
 }
 ```
 
-query source：
+不可信 Schema 的 remote source 除结构字段 `id`、`type` 外只引用 `endpointKey`，不得携带或覆盖 HTTP method、请求参数名、表单数据来源路径、常量、响应路径/映射、依赖、节流、查询长度或缓存策略。每个 `endpointKey` 的不可变 descriptor 由可信宿主注册表唯一托管，至少定义 v1 的 GET method、参数白名单、每个参数允许的数据来源（表单 dataPath、搜索文本或可信常量）、响应映射、触发/节流/缓存策略、结果上限与鉴权策略。生产端与 renderer 必须使用同一受信任 descriptor；Schema 中出现上述执行语义字段时，严格 JSON Schema 校验必须以 `SCHEMA_INVALID` 拒绝整份文档，不能忽略、覆盖或转发。
 
-- `data`：读取表单 dataPath；
-- `searchText`：读取当前 Select 的搜索文本；
-- `literal`：使用 Schema 中的标量常量。
-
-响应映射：`itemsPath` 相对响应根，其他 path 相对单个 item。`label` 转为 string；`value` 只接受 string/number/boolean；无效项丢弃并记录警告。结果去重后最多接收宿主设定的条数。
+注册表负责把响应映射成规范 `Option`。`label` 转为 string；`value` 只接受 string/number/boolean；无效项丢弃并记录警告。结果去重后不得超过 descriptor 规定的上限。
 
 行为：
 
-- 未满足 `dependsOn` 或 `minQueryLength` 时不发请求；
+- descriptor 声明的依赖数据或最小查询长度未满足时不发请求；
 - 查询参数改变时取消/忽略旧请求，只有最新请求可更新选项；
 - 缓存 key 由 endpointKey 和规范化参数构成，不跨认证主体共享；
 - 加载、空结果和失败必须有可见状态；失败可重试但不能把错误当作空结果；
 - 若当前已选 value 不在新列表中，清为 null 并触发正常 change 联动；
-- endpointKey 未注册时显示组件级错误并禁止提交依赖该值的表单。
+- endpointKey 未注册，或宿主 descriptor 不符合服务端批准版本时，显示组件级错误、上报 `DATA_SOURCE_DESCRIPTOR_MISMATCH`，并禁止提交依赖该值的表单。
 
 ## 7. 错误与降级矩阵
 
@@ -222,6 +203,7 @@ query source：
 | dataPath 缺失/类型不符 | 字段 | 禁用字段并显示配置错误；禁止提交 | `DATA_BINDING_INVALID` |
 | 规则路径或目标无效 | 局部/致命 | 加载前检查到则拒绝；运行时停止该规则 | `RULE_INVALID` |
 | 远程选项失败 | 字段 | 保留可重试错误，不伪装为空结果 | `DATA_SOURCE_FAILED` |
+| 远程选项携带执行映射或 descriptor 不匹配 | 致命/字段 | Schema 阶段拒绝非法字段；运行时停止该数据源并禁止依赖提交 | `SCHEMA_INVALID` / `DATA_SOURCE_DESCRIPTOR_MISMATCH` |
 | submit 网络失败 | 表单 | 保留用户数据，解除 loading，允许安全重试 | `ACTION_FAILED` |
 | 服务端 fieldError 无法映射 | 表单 | 放入错误摘要，不丢弃 | `FIELD_ERROR_UNMAPPED` |
 
@@ -229,6 +211,6 @@ query source：
 
 ## 8. 服务端复核清单
 
-提交处理必须按顺序检查：认证/权限 → 包络/版本 → formId/revision → action/source 绑定 → 幂等作用域与规范化指纹 → 原子登记/回放判定 → 数据类型与允许路径 → 字段 validator → 远程 option 合法性 → 上传文件所有权 → 业务校验 → 原子业务写入与结果持久化。
+提交处理必须按顺序检查：认证/权限 → 严格包络解析与 path/body 一致性 → 用请求携带的 scope 原子查询幂等记录并比较规范化指纹 → 已完成同指纹回放 / 异指纹冲突 / 处理中响应 → 仅无记录时校验当前 formId/revision 与 action/source 绑定并取得执行权 → 数据类型与允许路径 → 字段 validator → 远程 option 合法性 → 上传文件所有权 → 业务校验 → 原子业务写入与结果持久化。
 
 服务端不得把客户端未声明的数据键自动透传到持久层。建议以当前 revision 的字段白名单投影提交数据，对未知键返回 `REQUEST_INVALID` 或显式忽略并记录安全事件；本项目 v1 采用“拒绝未知键”。

@@ -47,7 +47,7 @@ v1 不包含：
 - 主版本不同：客户端必须拒绝整份文档，显示“协议版本不受支持”，不得尝试渲染。
 - 次版本或补丁版本不同：只有版本位于客户端显式声明的 `supportedSchemaVersions` 中时才能接收；不按“同主版本自动兼容”猜测。
 - 新组件、新必填字段、字段语义改变均至少发布新次版本及新 Schema；破坏性变更发布新主版本。
-- 同一 `formId` 的内容更新递增 `revision`。提交必须回传该值；服务端遇到过期 revision 返回 `FORM_REVISION_CONFLICT`。
+- 同一 `formId` 的内容更新递增 `revision`。提交必须回传该值；没有既存幂等记录的首次执行遇到过期 revision 返回 `FORM_REVISION_CONFLICT`。已完成提交的同 key、同指纹重试优先回放，不受当前 revision 变化影响。
 - Schema 文件默认严格校验未知字段。若未先协商新版本，未知字段属于 `SCHEMA_INVALID`，不能静默生效。
 
 ## 3. 下发文档包络
@@ -192,8 +192,8 @@ interface UploadValue {
 
 - path 中的 `{formId}` 必须与 body 一致；
 - `idempotencyKey` 必填，由客户端为一次逻辑提交生成；`requestId` 只用于追踪，重试时可以变化；
-- `actionId` 必须存在且类型为 `submit`，`sourceComponentId` 必须引用绑定该 action 的组件；
-- `revision` 必须仍有效；
+- 完成鉴权/授权、严格包络解析和 path/body 一致性校验后，服务端必须先按请求携带的 scope 与 `idempotencyKey` 原子查询记录并比较规范化请求指纹；
+- 已完成的同 key、同指纹记录必须直接回放，即使当前 `revision` 或 action 已过期；只有没有既存记录时，才要求 `revision` 仍有效，并校验 `actionId` 为 `submit`、`sourceComponentId` 绑定该 action；
 - 服务端重新执行类型、枚举、字段和业务校验；
 - 日志至少包含 `requestId`、`formId`、`revision`、认证主体和结果码，但不记录敏感字段原文。
 
@@ -286,7 +286,7 @@ submit 的非字段错误统一为：
 | `400` | `REQUEST_INVALID`、`SCHEMA_INVALID` |
 | `401` / `403` | `UNAUTHENTICATED`、`FORBIDDEN` |
 | `404` | `FORM_NOT_FOUND`、`ENDPOINT_NOT_FOUND` |
-| `409` | `FORM_REVISION_CONFLICT`、`IDEMPOTENCY_CONFLICT`、`SUBMISSION_IN_PROGRESS` |
+| `409` | `FORM_REVISION_CONFLICT`、`IDEMPOTENCY_KEY_CONFLICT`、`SUBMISSION_IN_PROGRESS` |
 | `422` | `VALIDATION_FAILED`、`CLIENT_CAPABILITY_MISMATCH` |
 | `429` | `RATE_LIMITED` |
 | `500` / `503` | `INTERNAL_ERROR`、`DEPENDENCY_UNAVAILABLE` |
@@ -301,7 +301,7 @@ submit 的非字段错误统一为：
 6. 渲染组件并绑定字段；单个非关键子组件失败时显示降级占位。
 7. 用户编辑时仅执行匹配 `sourceDataPath` 的白名单规则，然后执行可见且启用字段的同步校验。
 8. 触发 submit 时先做客户端校验，为逻辑提交创建 `idempotencyKey`，再提交完整数据；安全重试复用该 key，服务端是最终裁决者。
-9. 服务端先原子登记幂等键和规范化请求指纹，再执行写入并持久化可回放结果；具体规则见 `validation-and-actions-v1.md`。
+9. 服务端完成鉴权/授权、严格解析和 path/body 一致性后，先原子查询幂等记录并比较规范化请求指纹：同指纹已完成记录直接回放，异指纹返回 409；仅无记录时校验当前 revision/action/source、取得执行权，再执行写入并持久化可回放结果。具体规则见 `validation-and-actions-v1.md`。
 10. 将字段错误按 JSON Pointer 映射回组件；通用错误显示在 Form 错误摘要。
 
 ## 9. 完整性约束
