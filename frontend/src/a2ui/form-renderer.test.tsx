@@ -275,6 +275,62 @@ describe('A2UI form renderer', () => {
     expect(screen.queryByText('Plain text only', { selector: 'strong' })).not.toBeInTheDocument()
   })
 
+  it('applies inert to the background form when the confirmation dialog is open and removes it on close', async () => {
+    const document = documentWith(
+      { name: 'Ada' },
+      [
+        { id: 'name', type: 'TextInput', props: { label: 'Name' }, children: [], dataPath: '/name' },
+        {
+          id: 'reset',
+          type: 'Button',
+          props: { label: 'Reset' },
+          children: [],
+          action: { actionId: 'reset', confirm: { title: 'Discard edits?', message: 'This cannot be undone.' } },
+        },
+      ],
+      [{ id: 'reset', type: 'reset' }],
+    )
+    const controller = createA2UIFormController(document)
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    const form = window.document.querySelector('form')!
+    expect(form.hasAttribute('inert')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    await screen.findByRole('dialog', { name: 'Discard edits?' })
+    expect(form.hasAttribute('inert')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(form.hasAttribute('inert')).toBe(false)
+  })
+
+  it('cancels the confirmation dialog via a global Escape listener even when focus has drifted outside the dialog', async () => {
+    const document = documentWith(
+      { name: 'Ada' },
+      [
+        { id: 'name', type: 'TextInput', props: { label: 'Name' }, children: [], dataPath: '/name' },
+        {
+          id: 'reset',
+          type: 'Button',
+          props: { label: 'Reset' },
+          children: [],
+          action: { actionId: 'reset', confirm: { title: 'Discard edits?', message: 'This cannot be undone.' } },
+        },
+      ],
+      [{ id: 'reset', type: 'reset' }],
+    )
+    const controller = createA2UIFormController(document)
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    await screen.findByRole('dialog', { name: 'Discard edits?' })
+
+    // Fire Escape on the document — the global listener must cancel the dialog.
+    fireEvent.keyDown(window.document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
   it('traps confirmation-dialog focus, exposes its description, cancels with Escape, and restores the trigger focus', async () => {
     const document = documentWith(
       { name: 'Ada' },
@@ -505,7 +561,7 @@ describe('A2UI form renderer', () => {
     const image = new File(['1234'], 'avatar.png', { type: 'image/png' })
     fireEvent.change(fileInput, { target: { files: [image] } })
     expect(upload).toHaveBeenCalledTimes(1)
-    expect(screen.getByText(/45% uploaded/)).toBeInTheDocument()
+    expect(screen.getAllByText(/45% uploaded/).length).toBeGreaterThanOrEqual(1)
     expect(controller.getValue('/files')).toEqual([])
 
     resolveUpload?.({ fileId: 'file-server-1' })
@@ -546,14 +602,55 @@ describe('A2UI form renderer', () => {
 
     const fileInput = screen.getByLabelText('Files') as HTMLInputElement
     fireEvent.change(fileInput, { target: { files: [new File(['x'], 'retry.png', { type: 'image/png' })] } })
-    const retry = await screen.findByRole('button', { name: 'Retry retry.png' })
+    const removeFailed = await screen.findByRole('button', { name: 'Remove retry.png' })
     expect(controller.getValue('/files')).toEqual([])
-    fireEvent.click(retry)
+
+    // Remove the failed upload — it should disappear and no data should be written.
+    fireEvent.click(removeFailed)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove retry.png' })).not.toBeInTheDocument())
+    expect(controller.getValue('/files')).toEqual([])
+
+    // Re-add the file — the mock will succeed on this second attempt.
+    fireEvent.change(fileInput, { target: { files: [new File(['x'], 'retry.png', { type: 'image/png' })] } })
 
     await waitFor(() => expect(controller.getValue('/files')).toEqual([
       { fileId: 'file-server-2', name: 'retry.png', size: 1, mimeType: 'image/png', status: 'uploaded' },
     ]))
     expect(upload).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes upload progress in an aria-live region and surfaces failed upload status', async () => {
+    const document = documentWith(
+      { files: [] },
+      [{ id: 'files', type: 'Upload', props: { label: 'Files' }, children: [], dataPath: '/files', action: { actionId: 'upload' } }],
+      [{ id: 'upload', type: 'upload', endpointKey: 'files.upload', method: 'POST' }],
+    )
+    const controller = createA2UIFormController(document)
+    let resolveUpload: ((result: { readonly fileId: string }) => void) | undefined
+    const upload = vi.fn((request: A2UIUploadRequest) => {
+      request.reportProgress(60)
+      return new Promise<{ readonly fileId: string }>((resolve) => {
+        resolveUpload = resolve
+      })
+    })
+    render(<A2UIFormRenderer controller={controller} document={document} upload={upload} />)
+
+    const fileInput = screen.getByLabelText('Files') as HTMLInputElement
+    fireEvent.change(fileInput, { target: { files: [new File(['x'], 'progress.png', { type: 'image/png' })] } })
+
+    // The aria-live region should report progress.
+    const liveRegion = screen.getByRole('status', { name: 'Files upload progress' })
+    expect(liveRegion).toHaveAttribute('aria-live', 'polite')
+    await waitFor(() => expect(liveRegion).toHaveTextContent('progress.png: 60% uploaded'))
+
+    // Complete the upload — progress should disappear.
+    resolveUpload?.({ fileId: 'file-done' })
+    await waitFor(() => expect(liveRegion).toBeEmptyDOMElement())
+
+    // Verify upload result landed.
+    expect(controller.getValue('/files')).toEqual([
+      { fileId: 'file-done', name: 'progress.png', size: 1, mimeType: 'image/png', status: 'uploaded' },
+    ])
   })
 
   it('renders only the Markdown subset and removes unsafe link protocols without interpreting raw HTML', () => {

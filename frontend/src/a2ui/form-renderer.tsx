@@ -258,20 +258,22 @@ function FormComponent({ node }: { readonly node: FormNode }) {
   }
 
   return (
-    <form
-      aria-busy={context.state.submission.status === 'submitting'}
-      aria-label={node.props.title === undefined ? formName : undefined}
-      aria-labelledby={node.props.title === undefined ? undefined : titleId}
-      data-a2ui-component-id={node.id}
-      onKeyDown={handleKeyDown}
-      onSubmit={handleSubmit}
-    >
-      {node.props.title === undefined ? null : <h1 id={titleId}>{node.props.title}</h1>}
-      {node.props.description === undefined ? null : <p>{node.props.description}</p>}
-      <FormErrorSummary ref={summaryRef} />
-      {node.children.map((child) => <RenderedNode key={child.id} node={child} />)}
+    <>
+      <form
+        aria-busy={context.state.submission.status === 'submitting'}
+        aria-label={node.props.title === undefined ? formName : undefined}
+        aria-labelledby={node.props.title === undefined ? undefined : titleId}
+        data-a2ui-component-id={node.id}
+        onKeyDown={handleKeyDown}
+        onSubmit={handleSubmit}
+      >
+        {node.props.title === undefined ? null : <h1 id={titleId}>{node.props.title}</h1>}
+        {node.props.description === undefined ? null : <p>{node.props.description}</p>}
+        <FormErrorSummary ref={summaryRef} />
+        {node.children.map((child) => <RenderedNode key={child.id} node={child} />)}
+      </form>
       <ConfirmationDialog />
-    </form>
+    </>
   )
 }
 
@@ -330,6 +332,53 @@ function ConfirmationDialog() {
   const binding = sourceId === undefined ? undefined : findActionBinding(context.document.root, sourceId)
   const confirmation = binding?.confirm
   const isOpen = context.state.submission.status === 'awaiting_confirmation' && confirmation !== undefined
+
+  // Apply inert to the form when dialog is open. The dialog is a sibling of the
+  // form, so inert on the form only blocks background interaction.
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined
+    }
+    const form = document.querySelector<HTMLFormElement>('form[data-a2ui-component-id]')
+    if (form !== null) {
+      form.setAttribute('inert', '')
+      return () => {
+        form.removeAttribute('inert')
+      }
+    }
+  }, [isOpen])
+
+  // Global Escape listener — cancels dialog regardless of where focus has drifted.
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined
+    }
+    function handleGlobalKeyDown(event: globalThis.KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        context.controller.cancelPendingAction()
+      }
+    }
+    document.addEventListener('keydown', handleGlobalKeyDown)
+    return () => document.removeEventListener('keydown', handleGlobalKeyDown)
+  }, [context.controller, isOpen])
+
+  // Pull focus back into the dialog if it escapes (mouse click on inert background, script focus).
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined
+    }
+    function handleFocusIn(event: FocusEvent): void {
+      if (dialogRef.current === null || dialogRef.current.contains(event.target as Node)) {
+        return
+      }
+      // Focus drifted outside — pull it back to the first focusable element.
+      const focusable = getFocusableElements(dialogRef.current)
+      focusable[0]?.focus()
+    }
+    document.addEventListener('focusin', handleFocusIn)
+    return () => document.removeEventListener('focusin', handleFocusIn)
+  }, [isOpen])
 
   useEffect(() => {
     if (isOpen) {
@@ -852,6 +901,13 @@ function UploadComponent({ node }: { readonly node: UploadNode }) {
                 ? `The maximum of ${maxFiles} file${maxFiles === 1 ? '' : 's'} has been reached.`
                 : `${attachments.length} uploaded file${attachments.length === 1 ? '' : 's'} attached.`}
           </p>
+          <div aria-label={`${node.props.label} upload progress`} aria-live="polite" role="status">
+            {pendingUploads
+              .filter((upload) => upload.status === 'uploading')
+              .map((upload) => (
+                <span key={upload.id}>{upload.file.name}: {upload.progress}% uploaded.</span>
+              ))}
+          </div>
           {attachments.length === 0 && pendingUploads.length === 0 ? null : (
             <ul aria-label={`${node.props.label} uploads`}>
               {attachments.map((attachment, index) => (
@@ -865,6 +921,11 @@ function UploadComponent({ node }: { readonly node: UploadNode }) {
                   {upload.file.name} — {upload.status === 'uploading' ? `${upload.progress}% uploaded` : upload.message}
                   {upload.status === 'failed' && upload.retryable ? (
                     <button onClick={() => startUpload(upload.file, upload.id)} type="button">Retry {upload.file.name}</button>
+                  ) : null}
+                  {upload.status === 'failed' ? (
+                    <button onClick={() => {
+                      setPendingUploads((current) => current.filter((pending) => pending.id !== upload.id))
+                    }} type="button">Remove {upload.file.name}</button>
                   ) : null}
                 </li>
               ))}
