@@ -997,6 +997,26 @@ def _assert_acyclic(graph: dict[str, set[str]]) -> None:
         visit(source)
 
 
+# Validator → compatible component value types.
+# When the value type is statically ambiguous (e.g. Select / RadioGroup can
+# hold any scalar), the validator is rejected — this is an explicit, testable
+# rule that prevents the Python model, frontend renderer, and submission
+# validator from diverging.
+_VALIDATOR_TYPE_MATRIX: dict[str, frozenset[str]] = {
+    "required": frozenset(
+        {*_INPUT_COMPONENT_TYPES}
+    ),
+    "minLength": frozenset({"TextInput", "TextArea", "DatePicker"}),
+    "maxLength": frozenset({"TextInput", "TextArea", "DatePicker"}),
+    "pattern": frozenset({"TextInput", "TextArea", "DatePicker"}),
+    "minItems": frozenset({"CheckboxGroup", "Upload"}),
+    "maxItems": frozenset({"CheckboxGroup", "Upload"}),
+    "minimum": frozenset({"NumberInput"}),
+    "maximum": frozenset({"NumberInput"}),
+    "integer": frozenset({"NumberInput"}),
+}
+
+
 def _validate_validator_bounds(node: ComponentNode) -> None:
     if not node.validation:
         return
@@ -1012,6 +1032,19 @@ def _validate_validator_bounds(node: ComponentNode) -> None:
         raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
     if values.get("minimum", float("-inf")) > values.get("maximum", float("inf")):
         raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
+
+
+def _validate_validator_compatibility(node: ComponentNode) -> None:
+    """Reject validators that are incompatible with the component's value type."""
+    if not node.validation:
+        return
+    component_type = node.type
+    for validator in node.validation:
+        allowed = _VALIDATOR_TYPE_MATRIX.get(validator.type)
+        if allowed is None:
+            raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
+        if component_type not in allowed:
+            raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
 
 
 def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
@@ -1041,8 +1074,15 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
         if expires <= generated:
             raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
 
+    # Build dataPath → bound component mapping for setValue type validation.
+    _path_components: dict[str, list[ComponentNode]] = {}
+    for node in nodes:
+        if node.type in _INPUT_COMPONENT_TYPES and node.data_path:
+            _path_components.setdefault(node.data_path, []).append(node)
+
     for node in nodes:
         _validate_validator_bounds(node)
+        _validate_validator_compatibility(node)
         if node.type in _INPUT_COMPONENT_TYPES:
             try:
                 value = _resolve_pointer(document.data.initial_values, node.data_path or "")
@@ -1090,6 +1130,9 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
                 except KeyError as exc:
                     raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
                 graph.setdefault(rule.source_data_path, set()).add(effect.target_data_path)
+                # Validate setValue value type against every component bound to this path.
+                for bound_node in _path_components.get(effect.target_data_path, []):
+                    _validate_input_value(bound_node, effect.value)
     _assert_acyclic(graph)
 
 
