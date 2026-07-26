@@ -21,6 +21,12 @@ export type {
 } from './safe-rendering.tsx'
 export { createA2UIFormController, formRuntimeDiagnosticCodes } from './form-state.ts'
 export { useA2UIFormState } from './use-form-state.ts'
+export { A2UIFormRenderer } from './renderer.tsx'
+export type {
+  A2UIFormRendererProps,
+  A2UIUploadHandler,
+  A2UIUploadRequest,
+} from './renderer.tsx'
 export type {
   A2UIFormController,
   A2UIFormControllerOptions,
