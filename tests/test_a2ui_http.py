@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -156,6 +157,57 @@ def test_missing_principal_returns_401_without_authorizing_or_resolving() -> Non
         {"code": "UNAUTHENTICATED", "message": "Authentication is required.", "retryable": False}
     ]
     assert calls == []
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_principal_provider_exception_returns_safe_error_before_downstream_ports(
+    is_async: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    call_counts = {"principal": 0, "authorizer": 0, "resolver": 0}
+    unsafe_detail = "credential=top-secret"
+
+    if is_async:
+
+        async def principal_provider(_: Any) -> AuthenticatedPrincipal:
+            call_counts["principal"] += 1
+            raise RuntimeError(unsafe_detail)
+
+    else:
+
+        def principal_provider(_: Any) -> AuthenticatedPrincipal:
+            call_counts["principal"] += 1
+            raise RuntimeError(unsafe_detail)
+
+    def form_authorizer(*_: Any) -> AuthorizedResolveContext:
+        call_counts["authorizer"] += 1
+        return AuthorizedResolveContext()
+
+    def form_resolver(*_: Any) -> dict[str, Any]:
+        call_counts["resolver"] += 1
+        return _approved_document()
+
+    app = create_a2ui_app(
+        principal_provider=principal_provider,
+        form_authorizer=form_authorizer,
+        form_resolver=form_resolver,
+    )
+    with caplog.at_level(logging.ERROR, logger="agent_core.a2ui_http"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(RESOLVE_PATH, json=_resolve_payload())
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    body = _response_error(response)
+    assert body["errors"] == [
+        {
+            "code": "INTERNAL_ERROR",
+            "message": "An internal error prevented form resolution.",
+            "retryable": True,
+        }
+    ]
+    assert call_counts == {"principal": 1, "authorizer": 0, "resolver": 0}
+    assert unsafe_detail not in caplog.text
+    assert "spoofed-body-principal" not in caplog.text
 
 
 def test_authorization_denial_returns_403_without_calling_resolver() -> None:
