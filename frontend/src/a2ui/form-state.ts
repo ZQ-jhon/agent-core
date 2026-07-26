@@ -5,6 +5,7 @@ import {
   removeDataPathValue,
   setDataPathValue,
 } from './data-path.ts'
+import { isCompatibleBoundValue } from './bound-value.ts'
 import { componentRegistry } from './registry.ts'
 import type {
   ActionDefinition,
@@ -290,11 +291,20 @@ export function createA2UIFormController(
       const ids = fieldComponentIds.get(node.dataPath) ?? []
       ids.push(node.id)
       fieldComponentIds.set(node.dataPath, ids)
-      if (!getDataPathValue(values, node.dataPath).found) {
+      const initialValue = getDataPathValue(values, node.dataPath)
+      if (!initialValue.found) {
         invalidComponents.add(node.id)
         reportConfigurationProblem(
           'DATA_BINDING_INVALID',
           'A field dataPath does not resolve to an initial value.',
+          node.dataPath,
+          node.id,
+        )
+      } else if (!isCompatibleBoundValue(node, initialValue.value)) {
+        invalidComponents.add(node.id)
+        reportConfigurationProblem(
+          'DATA_BINDING_INVALID',
+          'A field initial value is incompatible with its component type.',
           node.dataPath,
           node.id,
         )
@@ -331,6 +341,18 @@ export function createA2UIFormController(
         return state?.visible === true && state.disabled === false
       })
       if (!isInteractive) {
+        return false
+      }
+      const incompatibleComponentId = findIncompatibleBoundComponent(dataPath, value)
+      if (incompatibleComponentId !== undefined) {
+        reportRuntimeDiagnostic(
+          'DATA_BINDING_INVALID',
+          'A value write is incompatible with the bound component type and was ignored.',
+          dataPath,
+          incompatibleComponentId,
+        )
+        refreshSnapshot()
+        notify()
         return false
       }
       const current = getDataPathValue(values, dataPath)
@@ -761,6 +783,16 @@ export function createA2UIFormController(
           continue
         }
         if (effect.type === 'setValue') {
+          const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, effect.value)
+          if (incompatibleComponentId !== undefined) {
+            reportConfigurationProblem(
+              'DATA_BINDING_INVALID',
+              'A rule setValue value is incompatible with the bound component type.',
+              effect.targetDataPath,
+              incompatibleComponentId,
+            )
+            break
+          }
           const before = getDataPathValue(values, effect.targetDataPath)
           const updated = setDataPathValue(values, effect.targetDataPath, effect.value)
           if (!updated.ok) {
@@ -795,6 +827,16 @@ export function createA2UIFormController(
       if (effect.type === 'setValue') {
         if (!getDataPathValue(batchValues, effect.targetDataPath).found) {
           reportConfigurationProblem('RULE_INVALID', 'A rule target dataPath is unavailable.', effect.targetDataPath)
+          return undefined
+        }
+        const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, effect.value)
+        if (incompatibleComponentId !== undefined) {
+          reportConfigurationProblem(
+            'DATA_BINDING_INVALID',
+            'A rule setValue value is incompatible with the bound component type.',
+            effect.targetDataPath,
+            incompatibleComponentId,
+          )
           return undefined
         }
       } else if (!nodesById.has(effect.targetComponentId)) {
@@ -903,6 +945,15 @@ export function createA2UIFormController(
           if (!getDataPathValue(values, effect.targetDataPath).found) {
             reportConfigurationProblem('RULE_INVALID', 'A rule target dataPath is unavailable.', effect.targetDataPath)
           }
+          const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, effect.value)
+          if (incompatibleComponentId !== undefined) {
+            reportConfigurationProblem(
+              'DATA_BINDING_INVALID',
+              'A rule setValue value is incompatible with the bound component type.',
+              effect.targetDataPath,
+              incompatibleComponentId,
+            )
+          }
           const edges = graph.get(rule.sourceDataPath) ?? new Set<DataPath>()
           edges.add(effect.targetDataPath)
           graph.set(rule.sourceDataPath, edges)
@@ -914,6 +965,16 @@ export function createA2UIFormController(
     if (hasCycle(graph)) {
       reportConfigurationProblem('RULE_INVALID', 'setValue rules create a cyclic data dependency.')
     }
+  }
+
+  function findIncompatibleBoundComponent(dataPath: DataPath, value: JsonValue): StableId | undefined {
+    for (const componentId of fieldComponentIds.get(dataPath) ?? []) {
+      const node = nodesById.get(componentId)?.node
+      if (node !== undefined && !isCompatibleBoundValue(node, value)) {
+        return componentId
+      }
+    }
+    return undefined
   }
 
   function projectSubmissionData(): Readonly<Record<string, JsonValue>> {

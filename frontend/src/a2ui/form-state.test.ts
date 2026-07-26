@@ -389,7 +389,7 @@ describe('A2UI form state controller', () => {
   it('uses Upload completion semantics for isEmpty conditions while preserving generic array behavior', () => {
     const document = documentWith(
       {
-        files: [{ status: 'uploading' }],
+        files: [],
         choices: ['existing-choice'],
         uploadDependent: '',
         arrayDependent: '',
@@ -426,7 +426,9 @@ describe('A2UI form state controller', () => {
     expect(controller.getSnapshot().components['upload-dependent']).toEqual({ visible: true, disabled: true })
     expect(controller.getSnapshot().components['array-dependent']).toEqual({ visible: true, disabled: false })
 
-    expect(controller.setValue('/files', [{ status: 'uploaded' }])).toBe(true)
+    expect(controller.setValue('/files', [
+      { fileId: 'file-1', name: 'resume.pdf', size: 1200, mimeType: 'application/pdf', status: 'uploaded' },
+    ])).toBe(true)
     expect(controller.getSnapshot().components['upload-dependent']).toEqual({ visible: true, disabled: false })
   })
 
@@ -684,6 +686,66 @@ describe('A2UI form state controller', () => {
     expect(controller.getSnapshot().canSubmit).toBe(false)
     expect(controller.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'RULE_INVALID' }),
+    ]))
+    expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({
+      status: 'blocked',
+      reason: 'configuration_invalid',
+    })
+  })
+
+  it('blocks a forged incompatible setValue rule before it corrupts a bound NumberInput', async () => {
+    const document = documentWith(
+      { trigger: true, amount: 0 },
+      [numberInput('amount', '/amount'), submitButton()],
+      { actions: [submitAction()] },
+    )
+    const forged = structuredClone(document)
+    Object.defineProperty(forged, 'rules', {
+      value: [
+        {
+          id: 'set-invalid-amount',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [{ type: 'setValue', targetDataPath: '/amount', value: 'not-a-number' }],
+        },
+      ],
+    })
+    let submissions = 0
+    const controller = createA2UIFormController(forged, {
+      submit: async () => {
+        submissions += 1
+        return { status: 'success', result: { submissionId: 'unexpected' } }
+      },
+    })
+
+    expect(controller.getValue('/amount')).toBe(0)
+    expect(controller.getSnapshot().canSubmit).toBe(false)
+    expect(controller.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DATA_BINDING_INVALID', path: '/amount', componentId: 'amount' }),
+    ]))
+    expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({
+      status: 'blocked',
+      reason: 'configuration_invalid',
+    })
+    expect(submissions).toBe(0)
+  })
+
+  it('blocks malformed Upload values in a forged normalized document', async () => {
+    const document = documentWith(
+      { files: [] },
+      [uploadInput('files', '/files'), submitButton()],
+      { actions: [uploadAction(), submitAction()] },
+    )
+    const forged = structuredClone(document)
+    Object.defineProperty(forged, 'data', {
+      value: { initialValues: { files: ['not-a-server-file'] } },
+    })
+    const controller = createA2UIFormController(forged)
+
+    expect(controller.getSnapshot().canSubmit).toBe(false)
+    expect(controller.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DATA_BINDING_INVALID', path: '/files', componentId: 'files' }),
     ]))
     expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({
       status: 'blocked',

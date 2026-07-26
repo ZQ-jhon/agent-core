@@ -180,6 +180,104 @@ describe('A2UI Form Profile v1 parser', () => {
     }
   })
 
+  it('rejects a setValue value that is incompatible with its bound NumberInput', () => {
+    const result = parseA2UIFormDocument({
+      schemaVersion: '1.0.0',
+      requestId: 'request-rule-number',
+      formId: 'form-rule-number',
+      revision: 1,
+      root: {
+        id: 'form-root',
+        type: 'Form',
+        props: {},
+        children: [
+          { id: 'amount', type: 'NumberInput', props: { label: 'Amount' }, children: [], dataPath: '/amount' },
+        ],
+      },
+      data: { initialValues: { trigger: true, amount: 0 } },
+      actions: [],
+      rules: [
+        {
+          id: 'set-invalid-amount',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [{ type: 'setValue', targetDataPath: '/amount', value: 'not-a-number' }],
+        },
+      ],
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({
+          code: 'DATA_BINDING_INVALID',
+          path: '/rules/set-invalid-amount/then/0/value',
+          componentId: 'amount',
+        }),
+      )
+    }
+  })
+
+  it('rejects malformed Upload initial values and setValue rule values', () => {
+    const result = parseA2UIFormDocument({
+      schemaVersion: '1.0.0',
+      requestId: 'request-upload-value',
+      formId: 'form-upload-value',
+      revision: 1,
+      root: {
+        id: 'form-root',
+        type: 'Form',
+        props: {},
+        children: [
+          {
+            id: 'files',
+            type: 'Upload',
+            props: { label: 'Files' },
+            children: [],
+            dataPath: '/files',
+            action: { actionId: 'upload' },
+          },
+        ],
+      },
+      data: { initialValues: { trigger: true, files: ['not-a-server-file'] } },
+      actions: [{ id: 'upload', type: 'upload', endpointKey: 'forms.upload', method: 'POST' }],
+      rules: [
+        {
+          id: 'set-invalid-upload',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [
+            {
+              type: 'setValue',
+              targetDataPath: '/files',
+              value: [{ fileId: 'file-1', name: 'resume.pdf', size: 1200, mimeType: 'application/pdf', status: 'pending' }],
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'DATA_BINDING_INVALID',
+            path: '/root/children/0/dataPath',
+            componentId: 'files',
+          }),
+          expect.objectContaining({
+            code: 'DATA_BINDING_INVALID',
+            path: '/rules/set-invalid-upload/then/0/value',
+            componentId: 'files',
+          }),
+        ]),
+      )
+    }
+  })
+
   it('rejects unsafe regex syntax before a later field validator can trigger catastrophic backtracking', () => {
     const schema = {
       schemaVersion: '1.0.0',
