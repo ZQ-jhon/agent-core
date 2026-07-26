@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from .a2ui import (
 
 RESOLVE_PATH = "/api/a2ui/v1/forms:resolve"
 _STABLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +170,11 @@ def create_a2ui_router(
         if isinstance(parsed, JSONResponse):
             return parsed
 
-        principal = await _await_port(principal_provider(request))
+        try:
+            principal = await _await_port(principal_provider(request))
+        except Exception:
+            logger.error("A2UI principal provider failed during form resolution")
+            return _internal_error(parsed)
         if not isinstance(principal, AuthenticatedPrincipal):
             headers = {"Cache-Control": "no-store"}
             challenge = _trusted_authentication_challenge(request)
