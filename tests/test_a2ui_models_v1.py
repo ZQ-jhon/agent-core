@@ -964,3 +964,167 @@ class TestValidatorCompatibility:
             [{"type": "minItems", "value": 1}],
         )
         assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID
+
+
+# ---------------------------------------------------------------------------
+# Regression: parent/child JSON Pointer overlap setValue type bypass (ISSUE-57)
+# ---------------------------------------------------------------------------
+
+
+def _example_by_form_id(form_id: str) -> dict[str, Any]:
+    return next(ex for ex in _examples() if ex["formId"] == form_id)
+
+
+def _add_rule(document: dict[str, Any], rule: dict[str, Any]) -> None:
+    document.setdefault("rules", []).append(rule)
+
+
+class TestSetValuePointerOverlap:
+    """setValue on a path that is an ancestor or descendant of a bound
+    dataPath must validate the resulting value against the affected component's
+    type contract."""
+
+    def test_ancestor_replace_rejects_wrong_child_type(self) -> None:
+        """setValue(/identity, {companyName: 123}) replaces the parent of
+        /identity/companyName (TextInput → expects str|null).  A numeric
+        companyName must be rejected."""
+        document = deepcopy(_example_by_form_id("conditional-application"))
+        _add_rule(
+            document,
+            {
+                "id": "bad-parent-overwrite",
+                "event": "change",
+                "sourceDataPath": "/identity/personType",
+                "when": {"op": "equals", "path": "/identity/personType", "value": "employee"},
+                "then": [
+                    {
+                        "type": "setValue",
+                        "targetDataPath": "/identity",
+                        "value": {"personType": "employee", "companyName": 123, "workEmail": "a@b.com"},
+                    }
+                ],
+            },
+        )
+        assert (
+            _error_code(lambda: validate_form_document(document))
+            == ProtocolErrorCode.DATA_BINDING_INVALID
+        )
+
+    def test_ancestor_replace_with_valid_child_types_passes(self) -> None:
+        """setValue(/identity, ...) with correct child types must pass."""
+        document = deepcopy(_example_by_form_id("conditional-application"))
+        _add_rule(
+            document,
+            {
+                "id": "good-parent-overwrite",
+                "event": "change",
+                "sourceDataPath": "/identity/personType",
+                "when": {"op": "equals", "path": "/identity/personType", "value": "employee"},
+                "then": [
+                    {
+                        "type": "setValue",
+                        "targetDataPath": "/identity",
+                        "value": {
+                            "personType": "employee",
+                            "companyName": "Acme Corp",
+                            "workEmail": "a@b.com",
+                        },
+                    }
+                ],
+            },
+        )
+        validate_form_document(document)
+
+    def test_descendant_modify_rejects_wrong_upload_status(self) -> None:
+        """setValue(/trip/attachments/0/status, 'uploading') writes a child
+        path of /trip/attachments (Upload).  'uploading' is not a valid
+        UploadValueV1 status, so it must be rejected."""
+        document = deepcopy(_example_by_form_id("remote-options-application"))
+        document["data"]["initialValues"]["trip"]["attachments"] = [
+            {
+                "fileId": "f1",
+                "name": "report.pdf",
+                "size": 1024,
+                "mimeType": "application/pdf",
+                "status": "uploaded",
+            }
+        ]
+        document["data"]["initialValues"]["trip"]["durationDays"] = 5
+        _add_rule(
+            document,
+            {
+                "id": "bad-descendant-write",
+                "event": "change",
+                "sourceDataPath": "/trip/durationDays",
+                "when": {
+                    "op": "greaterThan",
+                    "path": "/trip/durationDays",
+                    "value": 0,
+                },
+                "then": [
+                    {
+                        "type": "setValue",
+                        "targetDataPath": "/trip/attachments/0/status",
+                        "value": "uploading",
+                    }
+                ],
+            },
+        )
+        assert (
+            _error_code(lambda: validate_form_document(document))
+            == ProtocolErrorCode.DATA_BINDING_INVALID
+        )
+
+    def test_non_overlapping_adjacent_path_is_unaffected(self) -> None:
+        """A setValue on an adjacent non-overlapping path must not interfere
+        with bound component validation."""
+        document = deepcopy(_example_by_form_id("conditional-application"))
+        _add_rule(
+            document,
+            {
+                "id": "non-overlapping-write",
+                "event": "change",
+                "sourceDataPath": "/identity/personType",
+                "when": {"op": "equals", "path": "/identity/personType", "value": "employee"},
+                "then": [
+                    {
+                        "type": "setValue",
+                        "targetDataPath": "/preferences/notify",
+                        "value": False,
+                    }
+                ],
+            },
+        )
+        validate_form_document(document)
+
+    def test_rfc6901_escaped_tokens_are_decoded_for_overlap(self) -> None:
+        """A dataPath containing ~0/~1 must be properly decoded when checking
+        pointer overlap.  A setValue on the parent path must still enforce the
+        child component's type."""
+        document = deepcopy(_example_by_form_id("conditional-application"))
+        node = _node(document, "TextInput")
+        node["dataPath"] = "/data/a~0b/c~1d/field"
+        document["data"]["initialValues"] = {
+            **document["data"]["initialValues"],
+            "data": {"a~b": {"c/d": {"field": "hello"}}},
+        }
+        _add_rule(
+            document,
+            {
+                "id": "escaped-ancestor-bad",
+                "event": "change",
+                "sourceDataPath": "/identity/personType",
+                "when": {"op": "equals", "path": "/identity/personType", "value": "employee"},
+                "then": [
+                    {
+                        "type": "setValue",
+                        "targetDataPath": "/data/a~0b/c~1d",
+                        "value": {"field": 999},
+                    }
+                ],
+            },
+        )
+        assert (
+            _error_code(lambda: validate_form_document(document))
+            == ProtocolErrorCode.DATA_BINDING_INVALID
+        )

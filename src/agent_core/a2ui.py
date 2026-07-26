@@ -8,6 +8,7 @@ JSON and is never converted into a terminal identity.
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 from collections.abc import Mapping
@@ -832,6 +833,47 @@ def _decode_pointer_token(token: str) -> str:
     return token.replace("~1", "/").replace("~0", "~")
 
 
+def _pointer_tokens(pointer: str) -> list[str]:
+    """Decode a JSON Pointer (RFC 6901) into its decoded token list.
+
+    The empty string and ``"/"`` both yield the empty list (document root).
+    """
+    if not pointer or pointer == "/":
+        return []
+    return [_decode_pointer_token(token) for token in pointer.removeprefix("/").split("/")]
+
+
+def _apply_setvalue_effect(initial_values: dict[str, Any], pointer: str, value: Any) -> dict[str, Any]:
+    """Return a deep copy of *initial_values* with *value* set at *pointer*.
+
+    Intermediate dicts are created for non-existent tokens when the preceding
+    token resolves to a dict (allowable for ancestor-replace overlaps).
+    """
+    result = copy.deepcopy(initial_values)
+    tokens = _pointer_tokens(pointer)
+    if not tokens:
+        return result
+    target: Any = result
+    for token in tokens[:-1]:
+        if isinstance(target, dict):
+            if token not in target:
+                target[token] = {}
+            target = target[token]
+        elif isinstance(target, list):
+            index = int(token)
+            if index >= len(target):
+                return result
+            target = target[index]
+        else:
+            return result
+    last = tokens[-1]
+    if isinstance(target, dict):
+        target[last] = value
+    elif isinstance(target, list):
+        target[int(last)] = value
+    return result
+
+
 def _resolve_pointer(document: Any, pointer: str) -> Any:
     value = document
     for raw_token in pointer.removeprefix("/").split("/"):
@@ -1130,9 +1172,39 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
                 except KeyError as exc:
                     raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
                 graph.setdefault(rule.source_data_path, set()).add(effect.target_data_path)
-                # Validate setValue value type against every component bound to this path.
-                for bound_node in _path_components.get(effect.target_data_path, []):
-                    _validate_input_value(bound_node, effect.value)
+                # Validate setValue value type against every component whose
+                # dataPath overlaps with the target (exact, ancestor, or descendant).
+                effect_tokens = _pointer_tokens(effect.target_data_path)
+                for bound_path, bound_nodes in _path_components.items():
+                    bound_tokens = _pointer_tokens(bound_path)
+                    is_exact = bound_tokens == effect_tokens
+                    # bound is ancestor of effect: effect modifies a sub-path of the bound value.
+                    bound_is_ancestor = (
+                        len(bound_tokens) < len(effect_tokens)
+                        and bound_tokens == effect_tokens[: len(bound_tokens)]
+                    )
+                    # effect is ancestor of bound: effect replaces a parent containing the bound value.
+                    effect_is_ancestor = (
+                        len(effect_tokens) < len(bound_tokens)
+                        and effect_tokens == bound_tokens[: len(effect_tokens)]
+                    )
+                    if is_exact:
+                        for bound_node in bound_nodes:
+                            _validate_input_value(bound_node, effect.value)
+                    elif bound_is_ancestor or effect_is_ancestor:
+                        simulated = _apply_setvalue_effect(
+                            document.data.initial_values,
+                            effect.target_data_path,
+                            effect.value,
+                        )
+                        try:
+                            new_value = _resolve_pointer(simulated, bound_path)
+                        except KeyError:
+                            raise _SemanticIssue(
+                                ProtocolErrorCode.RULE_INVALID
+                            ) from None
+                        for bound_node in bound_nodes:
+                            _validate_input_value(bound_node, new_value)
     _assert_acyclic(graph)
 
 
