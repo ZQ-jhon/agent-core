@@ -48,6 +48,17 @@ function numberInput(id: string, dataPath: string, options: Record<string, unkno
   }
 }
 
+function uploadInput(id: string, dataPath: string, actionId = 'upload'): Record<string, unknown> {
+  return {
+    id,
+    type: 'Upload',
+    props: { label: id },
+    children: [],
+    dataPath,
+    action: { actionId },
+  }
+}
+
 function submitButton(actionId = 'submit'): Record<string, unknown> {
   return {
     id: 'submit-button',
@@ -60,6 +71,10 @@ function submitButton(actionId = 'submit'): Record<string, unknown> {
 
 function submitAction(id = 'submit'): Record<string, unknown> {
   return { id, type: 'submit', endpointKey: 'forms.submit', method: 'POST' }
+}
+
+function uploadAction(id = 'upload'): Record<string, unknown> {
+  return { id, type: 'upload', endpointKey: 'forms.upload', method: 'POST' }
 }
 
 describe('A2UI form state controller', () => {
@@ -196,6 +211,121 @@ describe('A2UI form state controller', () => {
     controller.reset()
     expect(controller.getSnapshot().components.company).toEqual({ visible: true, disabled: false })
     expect(controller.getValue('/final')).toBe('complete')
+  })
+
+  it('runs each rule at most once for initialization, a change event, and reset in a convergent DAG', () => {
+    const document = documentWith(
+      { trigger: 1, a: 0, b: 0, c: 0, e: 1, out: 0 },
+      [numberInput('trigger', '/trigger')],
+      {
+        rules: [
+          {
+            id: 'trigger-to-branches',
+            event: 'change',
+            sourceDataPath: '/trigger',
+            when: { op: 'equals', path: '/trigger', value: 1 },
+            then: [
+              { type: 'setValue', targetDataPath: '/a', value: 1 },
+              { type: 'setValue', targetDataPath: '/b', value: 1 },
+            ],
+            else: [
+              { type: 'setValue', targetDataPath: '/a', value: 0 },
+              { type: 'setValue', targetDataPath: '/b', value: 0 },
+            ],
+          },
+          {
+            id: 'a-to-c',
+            event: 'change',
+            sourceDataPath: '/a',
+            when: { op: 'equals', path: '/a', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/c', value: 1 }],
+            else: [{ type: 'setValue', targetDataPath: '/c', value: 0 }],
+          },
+          {
+            id: 'b-to-e',
+            event: 'change',
+            sourceDataPath: '/b',
+            when: { op: 'equals', path: '/b', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/e', value: 1 }],
+            else: [{ type: 'setValue', targetDataPath: '/e', value: 0 }],
+          },
+          {
+            id: 'c-to-e',
+            event: 'change',
+            sourceDataPath: '/c',
+            when: { op: 'equals', path: '/c', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/e', value: 2 }],
+            else: [{ type: 'setValue', targetDataPath: '/e', value: 0 }],
+          },
+          {
+            id: 'e-to-out',
+            event: 'change',
+            sourceDataPath: '/e',
+            when: { op: 'equals', path: '/e', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/out', value: 1 }],
+            else: [{ type: 'setValue', targetDataPath: '/out', value: 2 }],
+          },
+        ],
+      },
+    )
+    const controller = createA2UIFormController(document)
+
+    expect(controller.getValue('/out')).toBe(1)
+
+    expect(controller.setValue('/trigger', 0)).toBe(true)
+    expect(controller.setValue('/trigger', 1)).toBe(true)
+    expect(controller.getValue('/out')).toBe(1)
+
+    controller.reset()
+    expect(controller.getValue('/out')).toBe(1)
+
+    expect(controller.setValue('/trigger', 0)).toBe(true)
+    expect(controller.setValue('/trigger', 1)).toBe(true)
+    expect(controller.getValue('/out')).toBe(1)
+  })
+
+  it('uses Upload completion semantics for isEmpty conditions while preserving generic array behavior', () => {
+    const document = documentWith(
+      {
+        files: [{ status: 'uploading' }],
+        choices: ['existing-choice'],
+        uploadDependent: '',
+        arrayDependent: '',
+      },
+      [
+        uploadInput('files', '/files'),
+        textInput('upload-dependent', '/uploadDependent'),
+        textInput('array-dependent', '/arrayDependent'),
+      ],
+      {
+        actions: [uploadAction()],
+        rules: [
+          {
+            id: 'upload-complete',
+            event: 'change',
+            sourceDataPath: '/files',
+            when: { op: 'isEmpty', path: '/files' },
+            then: [{ type: 'setDisabled', targetComponentId: 'upload-dependent', value: true }],
+            else: [{ type: 'setDisabled', targetComponentId: 'upload-dependent', value: false }],
+          },
+          {
+            id: 'generic-array',
+            event: 'change',
+            sourceDataPath: '/choices',
+            when: { op: 'isEmpty', path: '/choices' },
+            then: [{ type: 'setDisabled', targetComponentId: 'array-dependent', value: true }],
+            else: [{ type: 'setDisabled', targetComponentId: 'array-dependent', value: false }],
+          },
+        ],
+      },
+    )
+    const controller = createA2UIFormController(document)
+
+    expect(controller.getSnapshot().components['upload-dependent']).toEqual({ visible: true, disabled: true })
+    expect(controller.getSnapshot().components['array-dependent']).toEqual({ visible: true, disabled: false })
+
+    expect(controller.setValue('/files', [{ status: 'uploaded' }])).toBe(true)
+    expect(controller.getSnapshot().components['upload-dependent']).toEqual({ visible: true, disabled: false })
   })
 
   it('stops a valid but overlong rule chain at the v1 20-batch safety limit', () => {

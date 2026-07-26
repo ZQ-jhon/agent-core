@@ -726,10 +726,12 @@ export function createA2UIFormController(
 
   function executeRuleBatches(changedPaths: readonly DataPath[] | undefined): void {
     let pendingPaths = changedPaths === undefined ? undefined : new Set(changedPaths)
+    const executedRuleIds = new Set<StableId>()
     for (let batch = 0; batch < MAX_RULE_BATCHES; batch += 1) {
-      const rules = pendingPaths === undefined
+      const rules = (pendingPaths === undefined
         ? document.rules
-        : document.rules.filter((rule) => pendingPaths!.has(rule.sourceDataPath))
+        : document.rules.filter((rule) => pendingPaths!.has(rule.sourceDataPath)))
+        .filter((rule) => !executedRuleIds.has(rule.id))
       if (rules.length === 0) {
         return
       }
@@ -737,7 +739,8 @@ export function createA2UIFormController(
       const scheduledEffects: RuleEffect[] = []
       for (const rule of rules) {
         const effects = selectRuleEffects(rule, batchValues)
-        if (effects !== undefined) {
+        if (effects !== undefined && effects.length > 0) {
+          executedRuleIds.add(rule.id)
           scheduledEffects.push(...effects)
         }
       }
@@ -815,7 +818,7 @@ export function createA2UIFormController(
         return { value: true, missingPaths: [] }
       }
       if (condition.op === 'isEmpty') {
-        return { value: isEmptyValue(current.value, false), missingPaths: [] }
+        return { value: isEmptyValue(current.value, isUploadDataPath(condition.path)), missingPaths: [] }
       }
       switch (condition.op) {
         case 'equals':
@@ -878,6 +881,10 @@ export function createA2UIFormController(
       return { value: !result.value, missingPaths: result.missingPaths }
     }
     return { value: false, missingPaths: [] }
+  }
+
+  function isUploadDataPath(dataPath: DataPath): boolean {
+    return (fieldComponentIds.get(dataPath) ?? []).some((componentId) => nodesById.get(componentId)?.node.type === 'Upload')
   }
 
   function validateRuntimeRuleReferences(): void {
