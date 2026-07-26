@@ -738,9 +738,9 @@ export function createA2UIFormController(
       const batchValues = values
       const scheduledEffects: RuleEffect[] = []
       for (const rule of rules) {
+        executedRuleIds.add(rule.id)
         const effects = selectRuleEffects(rule, batchValues)
-        if (effects !== undefined && effects.length > 0) {
-          executedRuleIds.add(rule.id)
+        if (effects !== undefined) {
           scheduledEffects.push(...effects)
         }
       }

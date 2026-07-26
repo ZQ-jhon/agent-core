@@ -152,9 +152,9 @@ describe('A2UI form state controller', () => {
     expect(transports).toBe(1)
   })
 
-  it('evaluates the allowed rules in batches and removes hidden values from the submission projection', () => {
+  it('evaluates allowed change rules in batches and removes hidden values from the submission projection', () => {
     const document = documentWith(
-      { kind: 'company', company: 'Acme', first: 1, second: 0, final: '' },
+      { kind: 'company', company: 'Acme', first: 0, second: 0, final: '' },
       [
         textInput('kind', '/kind'),
         {
@@ -195,6 +195,8 @@ describe('A2UI form state controller', () => {
     const controller = createA2UIFormController(document)
 
     expect(controller.getSnapshot().components.company).toEqual({ visible: true, disabled: false })
+    expect(controller.getValue('/final')).toBe('')
+    expect(controller.setValue('/first', 1)).toBe(true)
     expect(controller.getValue('/final')).toBe('complete')
 
     controller.setValue('/company', '')
@@ -210,7 +212,107 @@ describe('A2UI form state controller', () => {
 
     controller.reset()
     expect(controller.getSnapshot().components.company).toEqual({ visible: true, disabled: false })
-    expect(controller.getValue('/final')).toBe('complete')
+    expect(controller.getValue('/final')).toBe('')
+  })
+
+  it('does not rerun a no-else rule after initialization or reset first evaluates it false', () => {
+    const document = documentWith(
+      { left: 1, right: 1, e: -1, out: 0 },
+      [numberInput('left', '/left')],
+      {
+        rules: [
+          {
+            id: 'e-to-out',
+            event: 'change',
+            sourceDataPath: '/e',
+            when: { op: 'equals', path: '/e', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/out', value: 1 }],
+          },
+          {
+            id: 'left-to-e',
+            event: 'change',
+            sourceDataPath: '/left',
+            when: { op: 'equals', path: '/left', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/e', value: 0 }],
+          },
+          {
+            id: 'right-to-e',
+            event: 'change',
+            sourceDataPath: '/right',
+            when: { op: 'equals', path: '/right', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/e', value: 1 }],
+          },
+        ],
+      },
+    )
+    const controller = createA2UIFormController(document)
+
+    expect(controller.getValue('/e')).toBe(1)
+    expect(controller.getValue('/out')).toBe(0)
+
+    controller.reset()
+
+    expect(controller.getValue('/e')).toBe(1)
+    expect(controller.getValue('/out')).toBe(0)
+  })
+
+  it('does not rerun a no-else rule when a convergent change first evaluates it false', () => {
+    const document = documentWith(
+      { trigger: 0, a: 0, b: 0, c: 0, e: -1, out: 0 },
+      [numberInput('trigger', '/trigger')],
+      {
+        rules: [
+          {
+            id: 'trigger-to-branches',
+            event: 'change',
+            sourceDataPath: '/trigger',
+            when: { op: 'equals', path: '/trigger', value: 1 },
+            then: [
+              { type: 'setValue', targetDataPath: '/a', value: 1 },
+              { type: 'setValue', targetDataPath: '/b', value: 1 },
+            ],
+          },
+          {
+            id: 'a-to-c',
+            event: 'change',
+            sourceDataPath: '/a',
+            when: { op: 'equals', path: '/a', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/c', value: 1 }],
+          },
+          {
+            id: 'b-to-e-zero',
+            event: 'change',
+            sourceDataPath: '/b',
+            when: { op: 'equals', path: '/b', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/e', value: 0 }],
+          },
+          {
+            id: 'c-to-e-one',
+            event: 'change',
+            sourceDataPath: '/c',
+            when: { op: 'equals', path: '/c', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/e', value: 1 }],
+          },
+          {
+            id: 'e-to-out',
+            event: 'change',
+            sourceDataPath: '/e',
+            when: { op: 'equals', path: '/e', value: 1 },
+            then: [{ type: 'setValue', targetDataPath: '/out', value: 1 }],
+          },
+        ],
+      },
+    )
+    const controller = createA2UIFormController(document)
+
+    expect(controller.setValue('/trigger', 1)).toBe(true)
+    expect(controller.getValue('/e')).toBe(1)
+    expect(controller.getValue('/out')).toBe(0)
+
+    controller.reset()
+    expect(controller.setValue('/trigger', 1)).toBe(true)
+    expect(controller.getValue('/e')).toBe(1)
+    expect(controller.getValue('/out')).toBe(0)
   })
 
   it('runs each rule at most once for initialization, a change event, and reset in a convergent DAG', () => {
