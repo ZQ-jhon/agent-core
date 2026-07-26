@@ -42,7 +42,7 @@ from agent_core.a2ui_http import (
 )
 
 from .errors import A2UIProblem, safe_stable_id
-from .service import SubmissionService
+from .service import SubmissionPort
 
 
 logger = logging.getLogger("agent_core.a2ui_submission.http")
@@ -54,7 +54,7 @@ _STABLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 def create_submission_router(
     *,
-    service: SubmissionService,
+    service: SubmissionPort,
     principal_provider: PrincipalProvider,
     form_authorizer: FormAuthorizer,
 ) -> APIRouter:
@@ -79,7 +79,19 @@ def create_submission_router(
             401: {"model": FormSubmitErrorV1},
             403: {"model": FormSubmitErrorV1},
             409: {"model": FormSubmitErrorV1},
-            422: {"model": FormSubmitValidationErrorV1},
+            422: {
+                "description": "Field validation failure or current form/action contract error.",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "oneOf": [
+                                {"$ref": "#/components/schemas/FormSubmitValidationErrorV1"},
+                                {"$ref": "#/components/schemas/FormSubmitErrorV1"},
+                            ]
+                        }
+                    }
+                },
+            },
             500: {"model": FormSubmitErrorV1},
         },
         openapi_extra={

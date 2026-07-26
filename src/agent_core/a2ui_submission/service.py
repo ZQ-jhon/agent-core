@@ -8,7 +8,7 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from agent_core.a2ui import FormSubmitRequestV1, FormSubmitSuccessV1, SubmitResult
 
@@ -19,6 +19,7 @@ from .forms import (
     FormRegistry,
     RemoteOptionVerifier,
     SubmissionPrincipal,
+    UnknownSubmissionDataPath,
     validate_submission_data,
 )
 from .repository import (
@@ -37,6 +38,38 @@ class ServiceResponse:
     status_code: int
     body: dict[str, Any]
     replayed: bool = False
+
+
+class SubmissionPort(Protocol):
+    """The ISSUE-16 boundary consumed by the optional HTTP adapter.
+
+    The transport layer depends on this port rather than on SQLite.  The
+    existing ``SubmissionService`` is its production implementation; hosts
+    may substitute another implementation with the same frozen idempotency,
+    failure, and owner-isolation semantics.
+    """
+
+    def submit(
+        self,
+        *,
+        principal: SubmissionPrincipal,
+        form_id_from_path: str,
+        command: FormSubmitRequestV1,
+    ) -> ServiceResponse: ...
+
+    def get_submission(
+        self,
+        *,
+        principal: SubmissionPrincipal,
+        submission_id: str,
+    ) -> dict[str, Any]: ...
+
+    def audit_read(
+        self,
+        *,
+        principal: SubmissionPrincipal,
+        response: dict[str, Any],
+    ) -> None: ...
 
 
 class SubmissionService:
@@ -132,20 +165,29 @@ class SubmissionService:
                 or command.action.source_component_id not in action.source_component_ids
             ):
                 raise A2UIProblem(
-                    status_code=400,
-                    code="REQUEST_INVALID",
+                    status_code=422,
+                    code="SCHEMA_INVALID",
                     message="The submit action is not valid for the current form revision.",
                     request_id=command.request_id,
                     form_id=command.form_id,
                 )
 
-            validation = validate_submission_data(
-                snapshot=snapshot,
-                principal=principal,
-                data=command.data,
-                file_reference_verifier=self.file_reference_verifier,
-                remote_option_verifier=self.remote_option_verifier,
-            )
+            try:
+                validation = validate_submission_data(
+                    snapshot=snapshot,
+                    principal=principal,
+                    data=command.data,
+                    file_reference_verifier=self.file_reference_verifier,
+                    remote_option_verifier=self.remote_option_verifier,
+                )
+            except UnknownSubmissionDataPath:
+                raise A2UIProblem(
+                    status_code=400,
+                    code="REQUEST_INVALID",
+                    message="This data field is not declared by the current form revision.",
+                    request_id=command.request_id,
+                    form_id=command.form_id,
+                ) from None
             if validation.field_errors:
                 raise FieldValidationProblem(
                     field_errors=validation.field_errors,

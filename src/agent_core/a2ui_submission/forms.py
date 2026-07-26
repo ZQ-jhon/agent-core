@@ -120,6 +120,16 @@ class ValidationResult:
     field_errors: dict[str, list[dict[str, str]]]
 
 
+class UnknownSubmissionDataPath(ValueError):
+    """Signal a request-level data path rejection after idempotency lookup.
+
+    Unknown form-data keys are not field-validation failures: the frozen v1
+    contract rejects them as ``400 REQUEST_INVALID`` and must not create an
+    idempotency or submission record.  The service layer owns that transport
+    mapping so this validation module remains framework-free.
+    """
+
+
 def build_form_snapshot(document: A2UIFormDocumentV1 | Mapping[str, Any]) -> FormSnapshot:
     """Build a persistence view from the single shared Form Profile model."""
 
@@ -162,7 +172,13 @@ def build_form_snapshot(document: A2UIFormDocumentV1 | Mapping[str, Any]) -> For
         for action in payload.get("actions", [])
     }
     initial_values = copy.deepcopy(payload["data"]["initialValues"])
-    rules = tuple(copy.deepcopy(payload.get("rules", [])))
+    # ``setValue`` may deliberately assign JSON ``null``.  The general
+    # document projection excludes optional ``None`` fields for wire output,
+    # so retain rules from their models without ``exclude_none`` for server
+    # revalidation.
+    rules = tuple(
+        copy.deepcopy(rule.model_dump(by_alias=True)) for rule in (shared_document.rules or [])
+    )
     return FormSnapshot(
         form_id=payload["formId"],
         revision=payload["revision"],
@@ -254,17 +270,30 @@ def validate_submission_data(
     """Reject non-whitelisted or unsafe values and return a safe data projection."""
 
     errors: dict[str, list[dict[str, str]]] = {}
-    _validate_shape(snapshot.initial_values, data, "", snapshot.fields, errors)
+    # Merge only declared input into trusted initial values so rules can be
+    # evaluated server-side even when a client correctly omits hidden fields.
+    # Unknown paths intentionally raise before field validation; callers run
+    # this only after the idempotency lookup mandated by the frozen contract.
+    projected = _project_submission_data(snapshot, data)
+    _validate_shape(snapshot.initial_values, projected, "", snapshot.fields, errors)
     _reject_sensitive_keys(data, "", errors)
-    sanitized, component_states = _apply_rules(snapshot, data)
+    sanitized, component_states = _apply_rules(snapshot, projected)
 
     file_references: list[dict[str, str]] = []
     for path, field in snapshot.fields.items():
         visible, disabled = component_states.get(field.component_id, (True, False))
+        if not visible or disabled:
+            # Conditional hidden/disabled controls do not participate in
+            # server-side field validation. Rule effects have already applied
+            # to the normalized projection, so stale client values cannot win.
+            continue
+        _submitted_value, submitted = _resolve_pointer(data, path)
+        if not submitted:
+            _add_error(errors, path, "REQUIRED", "The complete form data is required.")
+            continue
         value, exists = _resolve_pointer(sanitized, path)
         if not exists:
-            continue
-        if not visible or disabled:
+            _add_error(errors, path, "REQUIRED", "The complete form data is required.")
             continue
         _validate_field_type(field, value, errors)
         _validate_field_rules(field, value, errors)
@@ -300,6 +329,44 @@ def validate_submission_data(
     )
 
 
+def _project_submission_data(snapshot: FormSnapshot, data: dict[str, Any]) -> dict[str, Any]:
+    return _merge_submission_value(
+        expected=snapshot.initial_values,
+        actual=data,
+        path="",
+        fields=snapshot.fields,
+    )
+
+
+def _merge_submission_value(
+    *,
+    expected: Any,
+    actual: Any,
+    path: str,
+    fields: Mapping[str, FieldDefinition],
+) -> Any:
+    """Overlay submitted keys while rejecting only undeclared data paths."""
+
+    if path in fields:
+        # Field type/range checks intentionally happen later so they can be
+        # rendered as RFC 6901 field errors rather than parser failures.
+        return copy.deepcopy(actual)
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        projected = copy.deepcopy(expected)
+        for key, value in actual.items():
+            child_path = _join_pointer(path, key)
+            if key not in expected:
+                raise UnknownSubmissionDataPath(child_path)
+            projected[key] = _merge_submission_value(
+                expected=expected[key],
+                actual=value,
+                path=child_path,
+                fields=fields,
+            )
+        return projected
+    return copy.deepcopy(actual)
+
+
 def _walk_nodes(node: dict[str, Any]) -> Iterable[dict[str, Any]]:
     yield node
     for child in node.get("children", []):
@@ -313,6 +380,11 @@ def _validate_shape(
     fields: Mapping[str, FieldDefinition],
     errors: dict[str, list[dict[str, str]]],
 ) -> None:
+    # Input values—including arrays—are validated by their component and
+    # declared validators below.  Their initial value is not a length/type
+    # template for later submissions.
+    if path in fields:
+        return
     if isinstance(expected, dict):
         if not isinstance(actual, dict):
             _add_error(errors, path or "/data", "TYPE_INVALID", "Expected an object.")
@@ -362,8 +434,6 @@ def _validate_shape(
                 )
         return
 
-    if path in fields:
-        return
     if expected is not None and not _same_json_type(expected, actual):
         _add_error(errors, path, "TYPE_INVALID", "Value type does not match the form.")
 
@@ -409,7 +479,7 @@ def _validate_field_rules(
         rule_type = rule.get("type")
         message = rule.get("message", "The field value is invalid.")
         if rule_type == "required" and not _has_value(value):
-            _add_error(errors, field.data_path, "REQUIRED", message)
+            _add_error(errors, field.data_path, _rule_code(rule, "FIELD_REQUIRED"), message)
         elif value is None:
             continue
         elif rule_type == "pattern" and isinstance(value, str):
@@ -418,25 +488,30 @@ def _validate_field_rules(
             except re.error:
                 matches = False
             if not matches:
-                _add_error(errors, field.data_path, "PATTERN_INVALID", message)
+                _add_error(errors, field.data_path, _rule_code(rule, "PATTERN_MISMATCH"), message)
         elif rule_type == "minLength" and isinstance(value, str) and len(value) < rule["value"]:
-            _add_error(errors, field.data_path, "MIN_LENGTH", message)
+            _add_error(errors, field.data_path, _rule_code(rule, "STRING_TOO_SHORT"), message)
         elif rule_type == "maxLength" and isinstance(value, str) and len(value) > rule["value"]:
-            _add_error(errors, field.data_path, "MAX_LENGTH", message)
+            _add_error(errors, field.data_path, _rule_code(rule, "STRING_TOO_LONG"), message)
         elif rule_type == "integer" and (
             not isinstance(value, int) or isinstance(value, bool)
         ):
-            _add_error(errors, field.data_path, "INTEGER_REQUIRED", message)
+            _add_error(errors, field.data_path, _rule_code(rule, "INTEGER_REQUIRED"), message)
         elif rule_type == "minimum" and isinstance(value, (int, float)) and not isinstance(value, bool):
             if value < rule["value"]:
-                _add_error(errors, field.data_path, "MINIMUM", message)
+                _add_error(errors, field.data_path, _rule_code(rule, "NUMBER_TOO_SMALL"), message)
         elif rule_type == "maximum" and isinstance(value, (int, float)) and not isinstance(value, bool):
             if value > rule["value"]:
-                _add_error(errors, field.data_path, "MAXIMUM", message)
+                _add_error(errors, field.data_path, _rule_code(rule, "NUMBER_TOO_LARGE"), message)
         elif rule_type == "minItems" and isinstance(value, list) and len(value) < rule["value"]:
-            _add_error(errors, field.data_path, "MIN_ITEMS", message)
+            _add_error(errors, field.data_path, _rule_code(rule, "ARRAY_TOO_SHORT"), message)
         elif rule_type == "maxItems" and isinstance(value, list) and len(value) > rule["value"]:
-            _add_error(errors, field.data_path, "MAX_ITEMS", message)
+            _add_error(errors, field.data_path, _rule_code(rule, "ARRAY_TOO_LONG"), message)
+
+
+def _rule_code(rule: Mapping[str, Any], default: str) -> str:
+    code = rule.get("code")
+    return code if isinstance(code, str) and code else default
 
 
 def _validate_date_bounds(
