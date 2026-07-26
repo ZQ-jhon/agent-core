@@ -20,6 +20,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 A2UI_FORM_SCHEMA_VERSION = "1.0.0"
 
+# ── Security budgets ───────────────────────────────────────────────
+# Coordinated with host body-size limits (see AGENTS.md / deployment docs).
+# Every budget is a hard ceiling; exceeding any of them produces a stable
+# ProtocolValidationError (DOCUMENT_TOO_LARGE) — never a RecursionError or
+# an unhandled 500.
+_MAX_JSON_DEPTH = 64
+_MAX_COMPONENT_DEPTH = 50
+_MAX_TOTAL_COMPONENTS = 500
+_MAX_RULES = 200
+_MAX_CONDITION_DEPTH = 10
+_MAX_CONDITION_NODES = 100
+_MAX_GRAPH_NODES = 200
+_MAX_VALIDATORS = 50
+_MAX_ACTIONS = 200
+_MAX_DATA_SOURCES = 50
+# ────────────────────────────────────────────────────────────────────
+
 _STABLE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
 _DATA_PATH_PATTERN = r"^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$"
 _ENDPOINT_KEY_PATTERN = r"^[A-Za-z][A-Za-z0-9._-]*$"
@@ -110,6 +127,7 @@ class ProtocolErrorCode(str, Enum):
     DATA_SOURCE_DESCRIPTOR_MISMATCH = "DATA_SOURCE_DESCRIPTOR_MISMATCH"
     ACTION_FAILED = "ACTION_FAILED"
     FIELD_ERROR_UNMAPPED = "FIELD_ERROR_UNMAPPED"
+    DOCUMENT_TOO_LARGE = "DOCUMENT_TOO_LARGE"
 
 
 _PROTOCOL_ERROR_MESSAGES: dict[ProtocolErrorCode, str] = {
@@ -125,6 +143,7 @@ _PROTOCOL_ERROR_MESSAGES: dict[ProtocolErrorCode, str] = {
     ProtocolErrorCode.DATA_SOURCE_DESCRIPTOR_MISMATCH: "The A2UI data source descriptor is not valid.",
     ProtocolErrorCode.ACTION_FAILED: "The A2UI action failed.",
     ProtocolErrorCode.FIELD_ERROR_UNMAPPED: "The A2UI field error could not be mapped.",
+    ProtocolErrorCode.DOCUMENT_TOO_LARGE: "The A2UI document exceeds the allowed size or depth.",
 }
 class ProtocolValidationError(ValueError):
     """A stable, non-reflective error for untrusted A2UI protocol input."""
@@ -158,8 +177,14 @@ class A2UIModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
 
 
-def _ensure_json_value(value: Any) -> Any:
-    """Accept only JSON-compatible data without coercion or execution."""
+def _ensure_json_value(value: Any, _depth: int = 0) -> Any:
+    """Accept only JSON-compatible data without coercion or execution.
+
+    Bounded depth prevents RecursionError on deeply nested untrusted input.
+    """
+
+    if _depth > _MAX_JSON_DEPTH:
+        raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
 
     if value is None or type(value) in {str, bool, int}:
         return value
@@ -168,14 +193,16 @@ def _ensure_json_value(value: Any) -> Any:
             raise ValueError("JSON numbers must be finite")
         return value
     if type(value) is list:
+        next_depth = _depth + 1
         for item in value:
-            _ensure_json_value(item)
+            _ensure_json_value(item, next_depth)
         return value
     if type(value) is dict:
+        next_depth = _depth + 1
         for key, item in value.items():
             if type(key) is not str:
                 raise ValueError("JSON object keys must be strings")
-            _ensure_json_value(item)
+            _ensure_json_value(item, next_depth)
         return value
     raise ValueError("value must be JSON-compatible")
 
@@ -852,60 +879,107 @@ def _resolve_pointer(document: Any, pointer: str) -> Any:
     return value
 
 
-def _walk_nodes(node: ComponentNode) -> list[ComponentNode]:
-    nodes = [node]
-    for child in node.children:
-        nodes.extend(_walk_nodes(child))
+def _walk_nodes(root: ComponentNode) -> list[ComponentNode]:
+    """Iterative component-tree walker with depth / size budgets."""
+
+    nodes: list[ComponentNode] = []
+    stack: list[tuple[ComponentNode, int]] = [(root, 0)]
+
+    while stack:
+        node, depth = stack.pop()
+
+        if depth > _MAX_COMPONENT_DEPTH:
+            raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+        if len(nodes) >= _MAX_TOTAL_COMPONENTS:
+            raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+
+        nodes.append(node)
+        # Push children in reverse so the original order is preserved.
+        for child in reversed(node.children):
+            stack.append((child, depth + 1))
+
     return nodes
 
 
 def _condition_nodes(condition: Condition, depth: int = 1) -> tuple[int, int]:
-    if isinstance(condition, LogicalCondition):
-        counts = [_condition_nodes(child, depth + 1) for child in condition.args]
-        return max([depth, *(child_depth for child_depth, _ in counts)]), 1 + sum(
-            count for _, count in counts
-        )
-    if isinstance(condition, NotCondition):
-        child_depth, child_count = _condition_nodes(condition.arg, depth + 1)
-        return max(depth, child_depth), 1 + child_count
-    return depth, 1
+    """Iterative condition-tree depth / node counter with budgets."""
+
+    max_depth = 0
+    total = 0
+    stack: list[tuple[Condition, int]] = [(condition, depth)]
+
+    while stack:
+        cond, d = stack.pop()
+        if d > max_depth:
+            max_depth = d
+        total += 1
+
+        if max_depth > _MAX_CONDITION_DEPTH or total > _MAX_CONDITION_NODES:
+            raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+
+        if isinstance(cond, LogicalCondition):
+            next_d = d + 1
+            for child in reversed(cond.args):
+                stack.append((child, next_d))
+        elif isinstance(cond, NotCondition):
+            stack.append((cond.arg, d + 1))
+        # else leaf (ValueCondition / PathCondition) → nothing to push
+
+    return max_depth, total
 
 
 def _condition_paths(condition: Condition) -> list[DataPath]:
-    if isinstance(condition, (ValueCondition, PathCondition)):
-        return [condition.path]
-    if isinstance(condition, LogicalCondition):
-        return [path for child in condition.args for path in _condition_paths(child)]
-    return _condition_paths(condition.arg)
+    """Iterative collection of DataPath references from a condition tree."""
+
+    paths: list[DataPath] = []
+    stack: list[Condition] = [condition]
+
+    while stack:
+        cond = stack.pop()
+        if isinstance(cond, (ValueCondition, PathCondition)):
+            paths.append(cond.path)
+        elif isinstance(cond, LogicalCondition):
+            for child in reversed(cond.args):
+                stack.append(child)
+        elif isinstance(cond, NotCondition):
+            stack.append(cond.arg)
+
+    return paths
 
 
 def _validate_condition_types(condition: Condition, initial_values: dict[str, Any]) -> None:
-    if isinstance(condition, LogicalCondition):
-        for child in condition.args:
-            _validate_condition_types(child, initial_values)
-        return
-    if isinstance(condition, NotCondition):
-        _validate_condition_types(condition.arg, initial_values)
-        return
-    if not isinstance(condition, ValueCondition):
-        return
+    """Iterative condition-type validation."""
 
-    try:
-        source_value = _resolve_pointer(initial_values, condition.path)
-    except KeyError as exc:
-        raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
+    stack: list[Condition] = [condition]
 
-    if condition.op in {"greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual"}:
-        if _is_number(source_value) and _is_number(condition.value):
-            return
-        if type(source_value) is str and type(condition.value) is str:
-            try:
-                datetime.fromisoformat(f"{source_value}T00:00:00")
-                datetime.fromisoformat(f"{condition.value}T00:00:00")
-            except ValueError as exc:
-                raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
-            return
-        raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
+    while stack:
+        cond = stack.pop()
+        if isinstance(cond, LogicalCondition):
+            for child in reversed(cond.args):
+                stack.append(child)
+            continue
+        if isinstance(cond, NotCondition):
+            stack.append(cond.arg)
+            continue
+        if not isinstance(cond, ValueCondition):
+            continue
+
+        try:
+            source_value = _resolve_pointer(initial_values, cond.path)
+        except KeyError as exc:
+            raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
+
+        if cond.op in {"greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual"}:
+            if _is_number(source_value) and _is_number(cond.value):
+                return
+            if type(source_value) is str and type(cond.value) is str:
+                try:
+                    datetime.fromisoformat(f"{source_value}T00:00:00")
+                    datetime.fromisoformat(f"{cond.value}T00:00:00")
+                except ValueError as exc:
+                    raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
+                return
+            raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
 
 
 def _validate_input_value(node: ComponentNode, value: Any) -> None:
@@ -979,22 +1053,34 @@ class UploadValueV1(A2UIModel):
 
 
 def _assert_acyclic(graph: dict[str, set[str]]) -> None:
-    visiting: set[str] = set()
+    """Iterative cycle detection for the setValue rule graph."""
+
+    if len(graph) > _MAX_GRAPH_NODES:
+        raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+
     visited: set[str] = set()
+    visiting: set[str] = set()
 
-    def visit(node: str) -> None:
-        if node in visiting:
-            raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
-        if node in visited:
-            return
-        visiting.add(node)
-        for target in graph.get(node, set()):
-            visit(target)
-        visiting.remove(node)
-        visited.add(node)
-
-    for source in graph:
-        visit(source)
+    for start in graph:
+        if start in visited:
+            continue
+        # Each DFS root: (node, iterator over targets, phase)
+        # phase = 0 → enter, 1 → exit.
+        stack: list[tuple[str, bool]] = [(start, False)]
+        while stack:
+            node, exit_phase = stack.pop()
+            if exit_phase:
+                visiting.discard(node)
+                visited.add(node)
+                continue
+            if node in visiting:
+                raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
+            if node in visited:
+                continue
+            visiting.add(node)
+            stack.append((node, True))  # schedule exit
+            for target in graph.get(node, set()):
+                stack.append((target, False))
 
 
 def _validate_validator_bounds(node: ComponentNode) -> None:
@@ -1015,6 +1101,16 @@ def _validate_validator_bounds(node: ComponentNode) -> None:
 
 
 def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
+    # ── Budget checks (fail-fast before full semantic walk) ──────────
+    if len(document.actions) > _MAX_ACTIONS:
+        raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+    if len(document.data_sources or []) > _MAX_DATA_SOURCES:
+        raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+    rules = document.rules or []
+    if len(rules) > _MAX_RULES:
+        raise _SemanticIssue(ProtocolErrorCode.DOCUMENT_TOO_LARGE)
+    # ─────────────────────────────────────────────────────────────────
+
     nodes = _walk_nodes(document.root)
     if document.root.type != "Form" or any(node.type == "Form" for node in nodes[1:]):
         raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
@@ -1064,14 +1160,13 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
             if props.data_source_id is not None and props.data_source_id not in sources_by_id:
                 raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
 
-    rules = document.rules or []
     rule_ids = [rule.id for rule in rules]
     if len(rule_ids) != len(set(rule_ids)):
         raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
     graph: dict[str, set[str]] = {}
     for rule in rules:
         max_depth, count = _condition_nodes(rule.when)
-        if max_depth > 10 or count > 100:
+        if max_depth > _MAX_CONDITION_DEPTH or count > _MAX_CONDITION_NODES:
             raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
         try:
             _resolve_pointer(document.data.initial_values, rule.source_data_path)
@@ -1105,16 +1200,26 @@ def _require_schema_version(payload: Any) -> Mapping[str, Any]:
 
 
 def _document_has_unknown_component(payload: Mapping[str, Any]) -> bool:
-    def visit(node: Any) -> bool:
+    """Iterative check for unsupported component types in the raw document."""
+
+    root = payload.get("root")
+    if not isinstance(root, Mapping):
+        return False
+
+    stack: list[Any] = [root]
+    while stack:
+        node = stack.pop()
         if not isinstance(node, Mapping):
-            return False
+            continue
         component_type = node.get("type")
         if component_type is not None and component_type not in SUPPORTED_COMPONENT_TYPES:
             return True
         children = node.get("children", [])
-        return isinstance(children, list) and any(visit(child) for child in children)
+        if isinstance(children, list):
+            for child in children:
+                stack.append(child)
 
-    return visit(payload.get("root"))
+    return False
 
 
 def _protocol_error_from_validation(

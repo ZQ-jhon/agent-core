@@ -259,3 +259,203 @@ def test_resolve_context_is_untrusted_json_not_terminal_identity() -> None:
 
     request["principal"] = "attempted-terminal-identity"
     assert _error_code(lambda: validate_form_resolve_request(request)) == ProtocolErrorCode.SCHEMA_INVALID
+
+
+# ── Security budget tests (ISSUE-59) ────────────────────────────────────
+
+
+def _deep_context(depth: int) -> dict[str, Any]:
+    """Build a resolve request whose context dict is nested `depth` levels deep."""
+    inner: dict[str, Any] = {"leaf": True}
+    for _ in range(depth):
+        inner = {"nested": inner}
+    return {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-budget-001",
+        "formKey": "travel-application",
+        "context": inner,
+        "client": {
+            "supportedSchemaVersions": ["1.0.0"],
+            "supportedComponents": ["Form"],
+        },
+    }
+
+
+def _base_document() -> dict[str, Any]:
+    return {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-budget-doc",
+        "formId": "budget-form",
+        "revision": 1,
+        "root": {
+            "id": "root-form",
+            "type": "Form",
+            "props": {"title": "Budget Test"},
+            "children": [
+                {
+                    "id": "field-1",
+                    "type": "TextInput",
+                    "props": {"label": "Name"},
+                    "children": [],
+                    "dataPath": "/name",
+                }
+            ],
+        },
+        "data": {"initialValues": {"name": ""}},
+        "actions": [
+            {
+                "id": "submit-action",
+                "type": "submit",
+                "endpointKey": "default.submit",
+                "method": "POST",
+            }
+        ],
+    }
+
+
+def test_json_depth_budget_rejects_oversized_context() -> None:
+    """A resolve request with a context deeper than _MAX_JSON_DEPTH
+    must return DOCUMENT_TOO_LARGE, not RecursionError."""
+
+    from agent_core.a2ui import _MAX_JSON_DEPTH
+
+    # Just below budget must pass.
+    shallow = _deep_context(_MAX_JSON_DEPTH - 2)
+    assert isinstance(validate_form_resolve_request(shallow), FormResolveRequestV1)
+
+    # Above budget must fail fast.
+    deep = _deep_context(_MAX_JSON_DEPTH + 10)
+    assert _error_code(lambda: validate_form_resolve_request(deep)) == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_json_depth_budget_prevents_recursion_error() -> None:
+    """A payload 2000 layers deep must produce DOCUMENT_TOO_LARGE,
+    never RecursionError or an unhandled exception."""
+
+    code = _error_code(lambda: validate_form_resolve_request(_deep_context(2000)))
+    assert code == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_component_depth_budget_rejects_deep_tree() -> None:
+    """A component tree deeper than _MAX_COMPONENT_DEPTH must be rejected."""
+
+    from agent_core.a2ui import _MAX_COMPONENT_DEPTH
+
+    document = _base_document()
+    # Build a chain of Section nodes.
+    inner: dict[str, Any] = {
+        "id": "bottom",
+        "type": "TextInput",
+        "props": {"label": "Bottom"},
+        "children": [],
+        "dataPath": "/name",
+    }
+    for i in range(_MAX_COMPONENT_DEPTH + 5):
+        inner = {
+            "id": f"section-{i}",
+            "type": "Section",
+            "props": {"title": f"Level {i}"},
+            "children": [inner],
+        }
+    document["root"]["children"] = [inner]
+
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_total_component_budget_rejects_oversized_tree() -> None:
+    """A document with more than _MAX_TOTAL_COMPONENTS nodes must be rejected."""
+
+    from agent_core.a2ui import _MAX_TOTAL_COMPONENTS
+
+    document = _base_document()
+    children: list[dict[str, Any]] = []
+    for i in range(_MAX_TOTAL_COMPONENTS + 5):
+        children.append({
+            "id": f"field-{i}",
+            "type": "TextInput",
+            "props": {"label": f"Field {i}"},
+            "children": [],
+            "dataPath": "/name",
+        })
+    document["root"]["children"] = children
+
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_rule_count_budget_rejects_too_many_rules() -> None:
+    """A document with more than _MAX_RULES rules must be rejected."""
+
+    from agent_core.a2ui import _MAX_RULES
+
+    document = _base_document()
+    rules: list[dict[str, Any]] = []
+    for i in range(_MAX_RULES + 5):
+        rules.append({
+            "id": f"rule-{i}",
+            "event": "change",
+            "sourceDataPath": "/name",
+            "when": {"op": "equals", "path": "/name", "value": f"trigger-{i}"},
+            "then": [
+                {"type": "setVisible", "targetComponentId": "field-1", "value": True}
+            ],
+        })
+    document["rules"] = rules
+
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_actions_budget_rejects_too_many_actions() -> None:
+    """A document with more than _MAX_ACTIONS actions must be rejected."""
+
+    from agent_core.a2ui import _MAX_ACTIONS
+
+    document = _base_document()
+    actions: list[dict[str, Any]] = []
+    for i in range(_MAX_ACTIONS + 5):
+        actions.append({
+            "id": f"action-{i}",
+            "type": "submit",
+            "endpointKey": "default.submit",
+            "method": "POST",
+        })
+    document["actions"] = actions
+
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_deep_json_value_in_condition_is_rejected() -> None:
+    """A ValueCondition with a deeply nested value object must be caught."""
+
+    from agent_core.a2ui import _MAX_JSON_DEPTH
+
+    document = _base_document()
+    deep_value: Any = "leaf"
+    for _ in range(_MAX_JSON_DEPTH + 10):
+        deep_value = {"nested": deep_value}
+    document["rules"] = [{
+        "id": "deep-rule",
+        "event": "change",
+        "sourceDataPath": "/name",
+        "when": {"op": "equals", "path": "/name", "value": deep_value},
+        "then": [
+            {"type": "setVisible", "targetComponentId": "field-1", "value": True}
+        ],
+    }]
+
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+
+
+def test_budget_violation_messages_never_expose_payload() -> None:
+    """Error messages for budget violations must be stable strings,
+    never reflecting the raw input."""
+
+    deep = _deep_context(200)
+    with pytest.raises(ProtocolValidationError) as raised:
+        validate_form_resolve_request(deep)
+
+    message = str(raised.value)
+    assert raised.value.code == ProtocolErrorCode.DOCUMENT_TOO_LARGE
+    # The message must be the fixed protocol message, nothing reflective.
+    assert "200" not in message
+    assert "nested" not in message
+    assert "RecursionError" not in message
