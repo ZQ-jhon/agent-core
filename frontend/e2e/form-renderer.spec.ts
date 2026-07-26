@@ -144,11 +144,11 @@ test.describe('Upload keyboard and announcement paths', () => {
 
   test('choose-file button is keyboard-triggerable via Enter', async ({ page }) => {
     const chooseFile = page.locator('button:has-text("Choose file")')
-    await chooseFile.focus()
 
-    // Listen for the native file chooser dialog triggered by Enter on the button.
+    // Set up the filechooser listener BEFORE triggering the keyboard action.
+    // Use locator-level press() so the event targets the button directly.
     const fileChooserPromise = page.waitForEvent('filechooser')
-    await page.keyboard.press('Enter')
+    await chooseFile.press('Enter')
 
     // Must receive the filechooser event — proves Enter triggered the hidden input's click.
     const fileChooser = await fileChooserPromise
@@ -158,7 +158,7 @@ test.describe('Upload keyboard and announcement paths', () => {
       buffer: Buffer.from('kb-test'),
     })
 
-    // File should appear in the upload list (the list item specifically).
+    // File should appear in the upload list.
     await expect(page.getByRole('listitem').filter({ hasText: 'kb-trigger.png' })).toBeVisible()
   })
 
@@ -278,12 +278,20 @@ test.describe('submitOnEnter keyboard behavior', () => {
     await nameField.focus()
     await nameField.fill('Ada')
 
-    // Press Enter — the single submit source should fire.
+    // Submission is kept pending so aria-busy=true is observable.
+    const submitButton = page.locator('button:has-text("Submit")')
     await page.keyboard.press('Enter')
 
-    // The submit button should transition to aria-busy while submitting.
-    const submitButton = page.locator('button:has-text("Submit")')
-    await expect(submitButton).toHaveAttribute('aria-busy')
+    // Must transition to aria-busy=true during the pending submission.
+    await expect(submitButton).toHaveAttribute('aria-busy', 'true')
+
+    // Verify the submit function was called exactly once.
+    const callCount = await page.evaluate(() => window.__e2e.submitCallCount)
+    expect(callCount).toBe(1)
+
+    // Resolve the pending submission so the test can clean up.
+    await page.evaluate(() => window.__e2e.resolveSubmit())
+    await expect(submitButton).toHaveAttribute('aria-busy', 'false')
   })
 
   test('Enter in TextArea does NOT trigger submit', async ({ page }) => {
@@ -292,8 +300,11 @@ test.describe('submitOnEnter keyboard behavior', () => {
     await notesField.fill('Some notes')
     await page.keyboard.press('Enter')
 
-    // TextArea should still have focus (Enter just adds a newline, submit not triggered)
+    // TextArea should still have focus (Enter just adds a newline).
     await expect(notesField).toBeFocused()
+    // Submit must NOT have been called.
+    const callCount = await page.evaluate(() => window.__e2e.submitCallCount)
+    expect(callCount).toBe(0)
   })
 
   test('Enter in Select does NOT trigger submit', async ({ page }) => {
@@ -301,7 +312,10 @@ test.describe('submitOnEnter keyboard behavior', () => {
     await planSelect.focus()
     await page.keyboard.press('Enter')
 
-    // Select should still have focus
+    // Select should still have focus.
     await expect(planSelect).toBeFocused()
+    // Submit must NOT have been called.
+    const callCount = await page.evaluate(() => window.__e2e.submitCallCount)
+    expect(callCount).toBe(0)
   })
 })

@@ -19,6 +19,8 @@ declare global {
       uploadResolve?: (result: { readonly fileId: string; readonly name?: string; readonly size?: number; readonly mimeType?: string }) => void
       uploadReject?: (error: Error) => void
       uploadProgress?: (percent: number) => void
+      submitCallCount?: number
+      resolveSubmit?: () => void
     }
   }
 }
@@ -121,7 +123,16 @@ function uploadForm() {
 }
 
 function submitOnEnterForm() {
-  const submit = async () => ({ status: 'success' as const, result: { submissionId: 'sub' } })
+  let resolvePending: (() => void) | undefined
+  let callCount = 0
+  const submit = async () => {
+    callCount += 1
+    window.__e2e.submitCallCount = callCount
+    // Keep submission pending until the test resolves it, so aria-busy=true is observable.
+    return new Promise<{ readonly status: 'success'; readonly result: { readonly submissionId: string } }>((resolve) => {
+      resolvePending = () => resolve({ status: 'success', result: { submissionId: 'sub' } })
+    })
+  }
   const document = documentWith(
     { name: '', notes: '', plan: 'free' },
     [
@@ -140,7 +151,7 @@ function submitOnEnterForm() {
     { submitOnEnter: true },
   )
   const controller = createA2UIFormController(document, { submit })
-  window.__e2e = { controller }
+  window.__e2e = { controller, submitCallCount: 0, resolveSubmit: () => resolvePending?.() }
   return { controller, document }
 }
 
