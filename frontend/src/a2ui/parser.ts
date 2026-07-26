@@ -1338,93 +1338,283 @@ function isValidCalendarDate(value: string): boolean {
 }
 
 /**
- * V1 patterns use a deliberately small, linear-time subset of ECMAScript
- * regular expressions: concatenated literals, escapes, character classes,
- * anchors, and a single quantifier per atom. Groups, alternation, references,
- * and nested quantifiers are rejected before a browser RegExp is constructed.
+ * V1 patterns must be RE2-compatible and safe against catastrophic
+ * backtracking in JavaScript's backtracking RegExp engine.
+ *
+ * A single character-level pass validates RE2 compatibility (aligning with
+ * the Python backend in ``src/agent_core/a2ui.py``) and additionally
+ * rejects adjacent overlapping quantifiers and nested quantifiers that
+ * could cause exponential backtracking even on RE2-legal syntax.
+ *
+ * Accepted: groups ``(…)``, alternation ``|``, non-capturing groups
+ * ``(?:…)``, character-class intersections ``[…&&[…]]``.
+ * Rejected: lookahead/behind, atomic groups, backreferences (numeric
+ * and named), possessive quantifiers, recursion, conditionals,
+ * nested quantifiers, and adjacent quantifiers on identical atoms.
  */
 function isSafePattern(pattern: string): boolean {
-  let index = 0
-  let canQuantify = false
-  while (index < pattern.length) {
-    const character = pattern[index]
-    if (character === undefined) {
+  const PATTERN_MAX_LENGTH = 256
+  let i = 0
+  const n = pattern.length
+  if (n > PATTERN_MAX_LENGTH) {
+    return false
+  }
+  /** Whether the cursor is inside a ``[...]`` character class. */
+  let inCharClass = false
+  /** Content of the last atom to which a quantifier was applied.  Used
+   *  to detect adjacent overlapping quantifiers (e.g. ``a*a*``). */
+  let lastQuantifiedAtom: string | null = null
+  /** Stack tracking whether each open group already contains a
+   *  quantifier.  A group whose stack entry is ``true`` must not be
+   *  followed by its own quantifier (nested-quantifier rejection). */
+  const groupQuantified: boolean[] = []
+
+  /** Return ``true`` when *ch* starts a quantifier (``* + ? {``). */
+  function isQuantifier(ch: string | undefined): boolean {
+    return ch === '*' || ch === '+' || ch === '?' || ch === '{'
+  }
+
+  /** Consume a ``{m}`` or ``{m,n}`` quantifier starting at position *pos*.
+   *  Returns the index after the closing ``}``, or ``-1`` on failure. */
+  function consumeBraceQuantifier(pos: number): number {
+    const m = /^\{(\d+)(?:,(\d+))?\}/.exec(pattern.slice(pos))
+    if (m === null) return -1
+    const min = Number(m[1])
+    const max = m[2] === undefined ? min : Number(m[2])
+    if (
+      !Number.isSafeInteger(min) ||
+      !Number.isSafeInteger(max) ||
+      min > max ||
+      max > 10000
+    ) {
+      return -1
+    }
+    return pos + m[0].length
+  }
+
+  /** Record that *atom* was just quantified.  Rejects when the
+   *  previous quantified atom was identical (adjacent-overlap check)
+   *  or when a group that already contains a quantifier is being
+   *  quantified (nested-quantifier check). */
+  function recordQuantifiedAtom(atom: string): boolean {
+    // Adjacent overlapping quantifiers: a*a*, [a-z]*[a-z]*, \d*\d*, etc.
+    if (lastQuantifiedAtom !== null && lastQuantifiedAtom === atom) {
       return false
     }
-    if (character === '(' || character === ')' || character === '|') {
+    // Nested quantifier: group already contains a quantifier.
+    if (groupQuantified.length > 0 && groupQuantified[groupQuantified.length - 1]) {
       return false
     }
-    if (character === '^' || character === '$') {
-      canQuantify = false
-      index += 1
-      continue
+    lastQuantifiedAtom = atom
+    if (groupQuantified.length > 0) {
+      groupQuantified[groupQuantified.length - 1] = true
     }
-    if (character === '\\') {
-      const escaped = pattern[index + 1]
-      if (escaped === undefined || /[1-9]/.test(escaped)) {
-        return false
-      }
-      canQuantify = true
-      index += 2
-      continue
-    }
-    if (character === '[') {
-      let classIndex = index + 1
-      let escaped = false
-      let closed = false
-      while (classIndex < pattern.length) {
-        const classCharacter = pattern[classIndex]
-        if (classCharacter === undefined) {
-          return false
+    return true
+  }
+
+  while (i < n) {
+    const ch = pattern[i]
+
+    // ── Escape sequences ───────────────────────────────────────────
+    if (ch === '\\') {
+      if (i + 1 >= n) return false
+      const nxt = pattern[i + 1]
+      // Numeric backreference: \1 .. \9
+      if (nxt >= '1' && nxt <= '9') return false
+      // Named backreference: \k<name>  or  \k'name'
+      if (nxt === 'k' && i + 2 < n && (pattern[i + 2] === '<' || pattern[i + 2] === "'")) return false
+
+      const atom = `\\${nxt}`
+      const after = i + 2
+      if (after < n && isQuantifier(pattern[after])) {
+        let qi = after
+        if (pattern[qi] === '{') {
+          qi = consumeBraceQuantifier(qi)
+          if (qi < 0) return false
+        } else {
+          qi += 1
         }
-        if (!escaped && classCharacter === ']') {
+        if (!recordQuantifiedAtom(atom)) return false
+        i = qi
+      } else {
+        lastQuantifiedAtom = null
+        i = after
+      }
+      continue
+    }
+
+    // ── Character class ────────────────────────────────────────────
+    if (ch === '[' && !inCharClass) {
+      inCharClass = true
+      const classStart = i
+      let j = i + 1
+      let esc = false
+      let closed = false
+      while (j < n) {
+        const cc = pattern[j]
+        if (!esc && cc === ']') {
           closed = true
           break
         }
-        escaped = !escaped && classCharacter === '\\'
-        if (classCharacter !== '\\') {
-          escaped = false
+        esc = !esc && cc === '\\'
+        if (cc !== '\\') esc = false
+        j += 1
+      }
+      if (!closed) return false
+      const classAtom = pattern.slice(classStart, j + 1)
+      const after = j + 1
+      if (after < n && isQuantifier(pattern[after])) {
+        let qi = after
+        if (pattern[qi] === '{') {
+          qi = consumeBraceQuantifier(qi)
+          if (qi < 0) return false
+        } else {
+          qi += 1
         }
-        classIndex += 1
+        if (!recordQuantifiedAtom(classAtom)) return false
+        i = qi
+      } else {
+        lastQuantifiedAtom = null
+        i = after
       }
-      if (!closed) {
-        return false
-      }
-      canQuantify = true
-      index = classIndex + 1
+      inCharClass = false
       continue
     }
-    if (character === '*' || character === '+' || character === '?') {
-      if (!canQuantify) {
-        return false
+
+
+
+    // ── RE2-incompatible group prefixes ─────────────────────────────
+    if (!inCharClass && ch === '(') {
+      const peek2 = pattern.slice(i, i + 2)
+      const peek3 = pattern.slice(i, i + 3)
+      const peek4 = pattern.slice(i, i + 4)
+
+      // Atomic group: (?>
+      if (peek3 === '(?>') return false
+
+      if (peek2 === '(?') {
+        const afterQ = pattern[i + 2]
+        // Lookahead / lookbehind: (?= (?! (?<= (?<!
+        if (afterQ === '=' || afterQ === '!' || afterQ === '<') return false
+        // Named capture definition: (?P<
+        if (peek4 === '(?P<') return false
+        // Named backreference: (?P=
+        if (peek4 === '(?P=') return false
+        // Conditional: (?(
+        if (peek3 === '(?(') return false
+        // Recursion / subroutine: (?R (?&
+        if (afterQ === 'R' || afterQ === '&') return false
+        // Non-capturing group (?:…) — allowed; skip past the ?: prefix.
+        if (peek3 === '(?:') {
+          groupQuantified.push(false)
+          lastQuantifiedAtom = null
+          i += 3
+          continue
+        }
       }
-      canQuantify = false
-      index += 1
+      // Open a normal capturing group.
+      groupQuantified.push(false)
+      lastQuantifiedAtom = null
+      i += 1
       continue
     }
-    if (character === '{') {
-      if (!canQuantify) {
-        return false
+
+    if (!inCharClass && ch === ')') {
+      if (groupQuantified.length === 0) return false
+      const after = i + 1
+      if (after < n && isQuantifier(pattern[after])) {
+        // Nested-quantifier check: group already contains a quantifier.
+        if (groupQuantified[groupQuantified.length - 1]) return false
+        // Adjacent-overlap check: same quantified atom before group.
+        if (lastQuantifiedAtom !== null && lastQuantifiedAtom === '(group)') return false
+        // Pop the group now that checks are done.
+        groupQuantified.pop()
+        let qi = after
+        if (pattern[qi] === '{') {
+          qi = consumeBraceQuantifier(qi)
+          if (qi < 0) return false
+        } else {
+          qi += 1
+        }
+        lastQuantifiedAtom = '(group)'
+        if (groupQuantified.length > 0) {
+          groupQuantified[groupQuantified.length - 1] = true
+        }
+        i = qi
+      } else {
+        groupQuantified.pop()
+        lastQuantifiedAtom = null
+        i = after
       }
-      const quantifier = /^\{(\d+)(?:,(\d+))?\}/.exec(pattern.slice(index))
-      if (quantifier === null) {
-        return false
-      }
-      const minimum = Number(quantifier[1])
-      const maximum = quantifier[2] === undefined ? minimum : Number(quantifier[2])
-      if (!Number.isSafeInteger(minimum) || !Number.isSafeInteger(maximum) || minimum > maximum || maximum > 10000) {
-        return false
-      }
-      canQuantify = false
-      index += quantifier[0].length
       continue
     }
-    if (character === ']' || character === '}') {
+
+    if (!inCharClass && ch === '|') {
+      lastQuantifiedAtom = null
+      i += 1
+      continue
+    }
+
+    // ── Possessive quantifiers (outside char class) ─────────────────
+    if (
+      !inCharClass &&
+      (ch === '*' || ch === '+' || ch === '?') &&
+      i + 1 < n &&
+      pattern[i + 1] === '+'
+    ) {
       return false
     }
-    canQuantify = true
-    index += 1
+    if (
+      !inCharClass &&
+      ch === '}' &&
+      i + 1 < n &&
+      pattern[i + 1] === '+'
+    ) {
+      return false
+    }
+
+    // ── Anchors ────────────────────────────────────────────────────
+    if (ch === '^' || ch === '$') {
+      lastQuantifiedAtom = null
+      i += 1
+      continue
+    }
+
+    // ── Quantifiers ────────────────────────────────────────────────
+    if (ch === '*' || ch === '+' || ch === '?') {
+      if (lastQuantifiedAtom === null) return false
+      i += 1
+      continue
+    }
+
+    if (ch === '{') {
+      if (lastQuantifiedAtom === null) return false
+      const qi = consumeBraceQuantifier(i)
+      if (qi < 0) return false
+      i = qi
+      continue
+    }
+
+    // ── Literal character ──────────────────────────────────────────
+    if (i + 1 < n && isQuantifier(pattern[i + 1])) {
+      const atom = ch
+      let qi = i + 1
+      if (pattern[qi] === '{') {
+        qi = consumeBraceQuantifier(qi)
+        if (qi < 0) return false
+      } else {
+        qi += 1
+      }
+      if (!recordQuantifiedAtom(atom)) return false
+      i = qi
+    } else {
+      lastQuantifiedAtom = null
+      i += 1
+    }
   }
+
+  // All groups must be closed.
+  if (groupQuantified.length !== 0) return false
   return true
 }
 

@@ -1217,6 +1217,11 @@ function validateValidator(validator: Validator, value: JsonValue, isUpload: boo
       if (typeof value !== 'string') {
         return undefined
       }
+      // Limit single-match input length to bound backtracking cost in
+      // JavaScript's RegExp engine, even for RE2-compatible patterns.
+      if (value.length > 4096) {
+        return makeClientError(validator.code ?? 'PATTERN_MISMATCH', validator.message ?? 'Enter a value in the expected format.')
+      }
       try {
         return new RegExp(validator.value, 'u').test(value)
           ? undefined

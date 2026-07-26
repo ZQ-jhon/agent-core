@@ -391,38 +391,181 @@ describe('A2UI Form Profile v1 parser', () => {
     }
   })
 
-  it('rejects unsafe regex syntax before a later field validator can trigger catastrophic backtracking', () => {
-    const schema = {
-      schemaVersion: '1.0.0',
-      requestId: 'request-4',
-      formId: 'form-4',
-      revision: 1,
-      root: {
-        id: 'form-root',
-        type: 'Form',
-        props: {},
-        children: [
-          {
-            id: 'input',
-            type: 'TextInput',
-            props: { label: 'Input' },
-            children: [],
-            dataPath: '/input',
-            validation: [{ type: 'pattern', value: '^(a+)+$' }],
-          },
-        ],
-      },
-      data: { initialValues: { input: '' } },
-      actions: [],
+  describe('pattern validation (RE2 compatibility and safety)', () => {
+    function schemaWithPattern(value: string) {
+      return {
+        schemaVersion: '1.0.0',
+        requestId: 'request-pattern',
+        formId: 'form-pattern',
+        revision: 1,
+        root: {
+          id: 'form-root',
+          type: 'Form' as const,
+          props: {},
+          children: [
+            {
+              id: 'input',
+              type: 'TextInput' as const,
+              props: { label: 'Input' },
+              children: [],
+              dataPath: '/input',
+              validation: [{ type: 'pattern' as const, value }],
+            },
+          ],
+        },
+        data: { initialValues: { input: '' } },
+        actions: [],
+      }
     }
-    const result = parseA2UIFormDocument(schema)
 
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.errors).toContainEqual(
-        expect.objectContaining({ code: 'SCHEMA_INVALID', path: '/root/children/0/validation/0/value' }),
-      )
+    function expectRejected(value: string) {
+      const result = parseA2UIFormDocument(schemaWithPattern(value))
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.errors).toContainEqual(
+          expect.objectContaining({ code: 'SCHEMA_INVALID', path: '/root/children/0/validation/0/value' }),
+        )
+      }
     }
+
+    function expectAccepted(value: string) {
+      const result = parseA2UIFormDocument(schemaWithPattern(value))
+      expect(result.ok).toBe(true)
+    }
+
+    // ── Accepted: RE2-compatible patterns ──────────────────────────
+    it('accepts simple literal patterns', () => {
+      expectAccepted('^1[3-9][0-9]{9}$')  // phone number
+      expectAccepted('[a-z]+')            // lowercase letters
+      expectAccepted('\\d{3}-\\d{4}')    // escaped digits with dash
+    })
+
+    it('accepts alternation', () => {
+      expectAccepted('a|b')
+      expectAccepted('^(foo|bar)$')
+      expectAccepted('^(red|green|blue)$')
+    })
+
+    it('accepts groups', () => {
+      expectAccepted('(foo)+')
+      expectAccepted('(ab){2,4}')
+    })
+
+    it('accepts non-capturing groups', () => {
+      expectAccepted('(?:foo|bar)')
+    })
+
+    it('accepts character class intersection (RE2-safe)', () => {
+      expectAccepted('[a-z&&[^aeiou]]')
+    })
+
+    it('accepts escaped ] inside character classes', () => {
+      expectAccepted('[\\]]')
+      expectAccepted('[\\]]+')
+      expectAccepted('[a-z\\]]')
+      expectAccepted('[-\\]]')
+    })
+
+    it('accepts safe quantified sequences', () => {
+      expectAccepted('^[0-9]+[a-z]*$')   // different char classes
+      expectAccepted('^[a-z][0-9]+$')    // literal + quantifier
+    })
+
+    // ── Rejected: non-RE2 features ─────────────────────────────────
+    it('rejects lookahead', () => {
+      expectRejected('(?=suffix)')
+      expectRejected('(?!suffix)')
+    })
+
+    it('rejects lookbehind', () => {
+      expectRejected('(?<=prefix)')
+      expectRejected('(?<!prefix)')
+    })
+
+    it('rejects atomic groups', () => {
+      expectRejected('(?>atomic)')
+    })
+
+    it('rejects numeric backreferences', () => {
+      expectRejected('(a)\\1')
+    })
+
+    it('rejects named capture definitions', () => {
+      expectRejected('(?P<name>a)')
+    })
+
+    it('rejects named backreferences', () => {
+      expectRejected('(?P<name>a)(?P=name)')
+      expectRejected('\\k<name>')
+      expectRejected("\\k'name'")
+    })
+
+    it('rejects recursion and subroutine calls', () => {
+      expectRejected('(?R)')
+      expectRejected('(?&name)')
+    })
+
+    it('rejects conditionals', () => {
+      expectRejected('(?()|)')
+    })
+
+    it('rejects possessive quantifiers', () => {
+      expectRejected('a*+')
+      expectRejected('a++')
+      expectRejected('a?+')
+      expectRejected('a{1,2}+')
+      expectRejected('a{3}+')
+      expectRejected('[a-z]++')    // possessive after char class
+      expectRejected('[a-z]*+')
+      expectRejected('[a-z]?+')
+      expectRejected('[a-z]{2}+')
+    })
+
+    // ── Rejected: adjacent overlapping quantifiers (ReDoS) ─────────
+    it('rejects adjacent identical literal quantifiers', () => {
+      expectRejected('^a*a*b$')          // a* followed by a*
+      expectRejected('^a+a+$')           // a+ followed by a+
+      expectRejected('^a?a?$')           // a? followed by a?
+    })
+
+    it('rejects ReDoS attack pattern with many adjacent quantifiers', () => {
+      expectRejected('^a*a*a*a*a*a*a*a*b$')
+    })
+
+    it('rejects adjacent identical character class quantifiers', () => {
+      expectRejected('[a-z]*[a-z]+')
+      expectRejected('[0-9]+[0-9]*')
+    })
+
+    it('rejects adjacent identical escape quantifiers', () => {
+      expectRejected('\\d*\\d*')
+      expectRejected('\\w+\\w+')
+    })
+
+    // ── Rejected: nested quantifiers ───────────────────────────────
+    it('rejects nested quantifiers via groups', () => {
+      expectRejected('^(a+)+$')
+      expectRejected('(a*)*')
+      expectRejected('([a-z]+)+')
+      expectRejected('((a+)+)')
+    })
+
+    it('rejects deeply nested quantifiers', () => {
+      expectRejected('(((a+)+)+)')
+    })
+
+    // ── Rejected: structural issues ────────────────────────────────
+    it('rejects unclosed character class', () => {
+      expectRejected('[a-z')
+    })
+
+    it('rejects unclosed group', () => {
+      expectRejected('(foo')
+    })
+
+    it('rejects pattern exceeding max length', () => {
+      expectRejected('a'.repeat(257))
+    })
   })
 
   it('rejects an excessively deep component tree with a diagnostic rather than overflowing the call stack', () => {
