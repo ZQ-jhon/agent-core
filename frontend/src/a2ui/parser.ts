@@ -1,4 +1,5 @@
 import { A2UI_FORM_SCHEMA_VERSION } from './types.ts'
+import { cloneJsonValue, getDataPathValue } from './data-path.ts'
 import type { ParseResult, SchemaDiagnostic, SchemaErrorCode } from './errors.ts'
 import type {
   A2UIFormDocumentV1,
@@ -1220,32 +1221,6 @@ function hasDataPath(initialValues: Readonly<Record<string, JsonValue>>, dataPat
   return getDataPathValue(initialValues, dataPath).found
 }
 
-function getDataPathValue(
-  initialValues: Readonly<Record<string, JsonValue>>,
-  dataPath: DataPath,
-): { readonly found: true; readonly value: JsonValue } | { readonly found: false } {
-  let current: unknown = initialValues
-  for (const encodedSegment of dataPath.slice(1).split('/')) {
-    const segment = encodedSegment.replaceAll('~1', '/').replaceAll('~0', '~')
-    if (Array.isArray(current)) {
-      if (!/^(0|[1-9]\d*)$/.test(segment)) {
-        return { found: false }
-      }
-      const index = Number(segment)
-      if (index >= current.length) {
-        return { found: false }
-      }
-      current = current[index]
-      continue
-    }
-    if (!isRecord(current) || !Object.hasOwn(current, segment)) {
-      return { found: false }
-    }
-    current = current[segment]
-  }
-  return isJsonValue(current) ? { found: true, value: current } : { found: false }
-}
-
 function isCompatibleBoundValue(node: ComponentNode, value: JsonValue): boolean {
   switch (node.type) {
     case 'TextInput':
@@ -1284,16 +1259,6 @@ function isCompatibleBoundValue(node: ComponentNode, value: JsonValue): boolean 
 
 function isOptionValue(value: JsonValue): value is Option['value'] {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-}
-
-function cloneJsonValue(value: JsonValue): JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return value
-  }
-  if (Array.isArray(value)) {
-    return value.map(cloneJsonValue)
-  }
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, cloneJsonValue(child)]))
 }
 
 function readEnum<T extends string>(

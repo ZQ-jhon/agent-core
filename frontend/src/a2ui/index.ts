@@ -19,6 +19,32 @@ export type {
   SchemaErrorPanelProps,
   UnsupportedComponentPlaceholderProps,
 } from './safe-rendering.tsx'
+export { createA2UIFormController, formRuntimeDiagnosticCodes } from './form-state.ts'
+export { useA2UIFormState } from './use-form-state.ts'
+export type {
+  A2UIFormController,
+  A2UIFormControllerOptions,
+  A2UIFormState,
+  FormActionResult,
+  FormComponentState,
+  FormErrorsState,
+  FormErrorSummaryItem,
+  FormFieldError,
+  FormFieldState,
+  FormRuntimeDiagnostic,
+  FormRuntimeDiagnosticCode,
+  FormServerError,
+  FormSubmissionResult,
+  FormSubmissionState,
+  FormSubmissionStatus,
+  FormSubmitClient,
+  FormSubmitErrorResponse,
+  FormSubmitRequest,
+  FormSubmitResponse,
+  FormSubmitSuccessResponse,
+  FormSubmitTransport,
+  FormSubmitValidationErrorResponse,
+} from './form-state.ts'
 export { A2UI_FORM_SCHEMA_VERSION } from './types.ts'
 export type {
   A2UIFormDocumentV1,
