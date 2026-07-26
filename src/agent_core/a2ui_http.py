@@ -227,7 +227,10 @@ def create_a2ui_router(
 
         return JSONResponse(
             status_code=200,
-            content=document.model_dump(by_alias=True, exclude_none=True),
+            # ``exclude_none`` would erase an explicit JSON null from a
+            # required ``setValue`` rule effect. Preserve supplied Profile
+            # fields while still omitting model defaults.
+            content=document.model_dump(by_alias=True, exclude_unset=True),
         )
 
     return router
@@ -286,7 +289,9 @@ def _validated_document_for_request(
 ) -> A2UIFormDocumentV1:
     payload: Any
     if isinstance(resolved, A2UIFormDocumentV1):
-        payload = resolved.model_dump(by_alias=True, exclude_none=True)
+        # A shared model can legally carry an explicit null as a setValue
+        # effect value. Sparse serialization retains that contract value.
+        payload = resolved.model_dump(by_alias=True, exclude_unset=True)
     else:
         payload = resolved
     if not isinstance(payload, Mapping):
