@@ -182,7 +182,11 @@ def create_submission_router(
         if isinstance(authorization, JSONResponse):
             return authorization
         service.audit_read(principal=principal, response=response)
-        return JSONResponse(status_code=200, content=response)
+        return JSONResponse(
+            status_code=200,
+            content=response,
+            headers={"Cache-Control": "no-store"},
+        )
 
     return router
 
