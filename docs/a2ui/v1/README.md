@@ -1,5 +1,8 @@
 # A2UI Form Profile v1
 
+Route-level API, generated OpenAPI, observability, and local verification:
+[`http-api-v1.md`](http-api-v1.md).
+
 项目本地的安全动态表单契约。阅读顺序：
 
 1. [`schema-v1.md`](schema-v1.md)：范围、版本、包络、数据绑定和 HTTP 契约；

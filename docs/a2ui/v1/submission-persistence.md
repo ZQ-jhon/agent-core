@@ -1,5 +1,9 @@
 # A2UI Form Profile v1 submission persistence
 
+For route-level OpenAPI, approved request/response examples, observability,
+and local verification, see [`http-api-v1.md`](http-api-v1.md).  This document
+remains the storage and persistence-boundary reference.
+
 ## Integration boundary
 
 `agent_core.a2ui` is the single framework-free source of truth for the frozen

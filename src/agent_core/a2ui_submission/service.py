@@ -10,7 +10,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from agent_core.a2ui import FormSubmitRequestV1, FormSubmitSuccessV1, SubmitResult
+from agent_core.a2ui import (
+    A2UI_FORM_SCHEMA_VERSION,
+    FormSubmitRequestV1,
+    FormSubmitSuccessV1,
+    SubmitResult,
+)
 
 from .errors import A2UIProblem, FieldValidationProblem
 from .forms import (
@@ -309,6 +314,7 @@ class SubmissionService:
                     "event": event,
                     "requestId": request_id or (command.request_id if command else "unknown"),
                     "formId": form_id or (command.form_id if command else "unknown"),
+                    "schemaVersion": command.schema_version if command else A2UI_FORM_SCHEMA_VERSION,
                     "revision": revision if revision is not None else (command.revision if command else None),
                     "subjectId": principal.subject_id,
                     "tenantId": principal.tenant_id,
