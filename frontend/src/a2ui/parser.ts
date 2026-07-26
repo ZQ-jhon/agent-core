@@ -1,4 +1,6 @@
 import { A2UI_FORM_SCHEMA_VERSION } from './types.ts'
+import { isCompatibleBoundValue } from './bound-value.ts'
+import { cloneJsonValue, dataPathsOverlap, getDataPathValue, setDataPathValue } from './data-path.ts'
 import type { ParseResult, SchemaDiagnostic, SchemaErrorCode } from './errors.ts'
 import type {
   A2UIFormDocumentV1,
@@ -1095,8 +1097,12 @@ function validateDocumentSemantics(
   const actionById = new Map(actions.map((action) => [action.id, action]))
   const dataSourceIds = new Set(dataSources.map((source) => source.id))
   const nodeIds = new Set(context.nodes.map((node) => node.id))
+  const boundNodesByDataPath = new Map<DataPath, ComponentNode[]>()
   for (const node of context.nodes) {
     if (node.dataPath !== undefined) {
+      const boundNodes = boundNodesByDataPath.get(node.dataPath) ?? []
+      boundNodes.push(node)
+      boundNodesByDataPath.set(node.dataPath, boundNodes)
       const dataValue = getDataPathValue(initialValues, node.dataPath)
       if (!dataValue.found) {
         addError(
@@ -1138,12 +1144,39 @@ function validateDocumentSemantics(
     const rulePath = `/rules/${rule.id}`
     assertExistingDataPath(context, initialValues, rule.sourceDataPath, `${rulePath}/sourceDataPath`)
     validateConditionPaths(context, initialValues, rule.when, `${rulePath}/when`)
-    for (const [effectIndex, effect] of [...rule.then, ...(rule.else ?? [])].entries()) {
-      if ('targetComponentId' in effect && !nodeIds.has(effect.targetComponentId)) {
-        addError(context, 'RULE_INVALID', 'Rule target component must exist.', `${rulePath}/effects/${effectIndex}/targetComponentId`)
-      }
-      if ('targetDataPath' in effect) {
-        assertExistingDataPath(context, initialValues, effect.targetDataPath, `${rulePath}/effects/${effectIndex}/targetDataPath`)
+    for (const branch of [
+      { name: 'then', effects: rule.then },
+      { name: 'else', effects: rule.else ?? [] },
+    ] as const) {
+      for (const [effectIndex, effect] of branch.effects.entries()) {
+        const effectPath = `${rulePath}/${branch.name}/${effectIndex}`
+        if ('targetComponentId' in effect && !nodeIds.has(effect.targetComponentId)) {
+          addError(context, 'RULE_INVALID', 'Rule target component must exist.', `${effectPath}/targetComponentId`)
+        }
+        if ('targetDataPath' in effect) {
+          assertExistingDataPath(context, initialValues, effect.targetDataPath, `${effectPath}/targetDataPath`)
+          const candidate = setDataPathValue(initialValues, effect.targetDataPath, effect.value)
+          if (!candidate.ok) {
+            continue
+          }
+          for (const [boundDataPath, boundNodes] of boundNodesByDataPath) {
+            if (!dataPathsOverlap(boundDataPath, effect.targetDataPath)) {
+              continue
+            }
+            const candidateValue = getDataPathValue(candidate.value, boundDataPath)
+            for (const node of boundNodes) {
+              if (!candidateValue.found || !isCompatibleBoundValue(node, candidateValue.value)) {
+                addError(
+                  context,
+                  'DATA_BINDING_INVALID',
+                  'A rule setValue value is incompatible with the bound component type.',
+                  `${effectPath}/value`,
+                  node.id,
+                )
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -1218,82 +1251,6 @@ function validateRuleValueCycles(context: ParseContext, rules: readonly LinkRule
 
 function hasDataPath(initialValues: Readonly<Record<string, JsonValue>>, dataPath: DataPath): boolean {
   return getDataPathValue(initialValues, dataPath).found
-}
-
-function getDataPathValue(
-  initialValues: Readonly<Record<string, JsonValue>>,
-  dataPath: DataPath,
-): { readonly found: true; readonly value: JsonValue } | { readonly found: false } {
-  let current: unknown = initialValues
-  for (const encodedSegment of dataPath.slice(1).split('/')) {
-    const segment = encodedSegment.replaceAll('~1', '/').replaceAll('~0', '~')
-    if (Array.isArray(current)) {
-      if (!/^(0|[1-9]\d*)$/.test(segment)) {
-        return { found: false }
-      }
-      const index = Number(segment)
-      if (index >= current.length) {
-        return { found: false }
-      }
-      current = current[index]
-      continue
-    }
-    if (!isRecord(current) || !Object.hasOwn(current, segment)) {
-      return { found: false }
-    }
-    current = current[segment]
-  }
-  return isJsonValue(current) ? { found: true, value: current } : { found: false }
-}
-
-function isCompatibleBoundValue(node: ComponentNode, value: JsonValue): boolean {
-  switch (node.type) {
-    case 'TextInput':
-    case 'TextArea':
-      return value === null || typeof value === 'string'
-    case 'NumberInput':
-      return value === null || typeof value === 'number'
-    case 'Select':
-    case 'RadioGroup':
-      if (value === null) {
-        return true
-      }
-      if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
-        return false
-      }
-      const options = node.props.options
-      if (options === undefined) {
-        return true
-      }
-      return options.some((option) => Object.is(option.value, value))
-    case 'CheckboxGroup':
-      if (!Array.isArray(value) || !value.every(isOptionValue)) {
-        return false
-      }
-      return new Set(value.map((item) => `${typeof item}:${String(item)}`)).size === value.length && value.every((item) => node.props.options.some((option) => Object.is(option.value, item)))
-    case 'DatePicker':
-      return value === null || (typeof value === 'string' && datePattern.test(value) && isValidCalendarDate(value))
-    case 'Switch':
-      return typeof value === 'boolean'
-    case 'Upload':
-      return Array.isArray(value)
-    default:
-      return true
-  }
-}
-
-function isOptionValue(value: JsonValue): value is Option['value'] {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-}
-
-function cloneJsonValue(value: JsonValue): JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return value
-  }
-  if (Array.isArray(value)) {
-    return value.map(cloneJsonValue)
-  }
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, cloneJsonValue(child)]))
 }
 
 function readEnum<T extends string>(
