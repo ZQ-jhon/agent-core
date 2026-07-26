@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -430,6 +431,36 @@ def test_same_key_replays_and_different_payload_conflicts(tmp_path: Path) -> Non
     assert conflict.status_code == 409
     assert FormSubmitErrorV1.model_validate(conflict.json()).errors[0].code == "IDEMPOTENCY_KEY_CONFLICT"
     assert components.repository.count_submissions() == 1
+
+
+def test_submission_audit_log_has_safe_versioned_correlation(tmp_path: Path, caplog) -> None:
+    components = _components(tmp_path)
+    with caplog.at_level(logging.INFO, logger="agent_core.a2ui.audit"):
+        with TestClient(components.app) as client:
+            response = client.post(SUBMIT_PATH, json=_payload(), headers=_headers())
+
+    assert response.status_code == 200
+    events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "agent_core.a2ui.audit"
+    ]
+    completed = next(event for event in events if event["event"] == "submission_completed")
+    assert completed == {
+        "event": "submission_completed",
+        "requestId": "request-001",
+        "formId": "single-field-update",
+        "schemaVersion": "1.0.0",
+        "revision": 1,
+        "subjectId": "user-a",
+        "tenantId": "tenant-a",
+        "submissionId": response.json()["result"]["submissionId"],
+        "resultCode": "SUCCESS",
+    }
+    rendered = "\n".join(record.getMessage() for record in caplog.records)
+    assert "13800138000" not in rendered
+    assert "idem-001" not in rendered
+    assert "writer" not in rendered
 
 
 def test_replay_precedes_current_revision_validation(tmp_path: Path) -> None:

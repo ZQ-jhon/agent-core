@@ -137,7 +137,32 @@ def create_a2ui_router(
 
     router = APIRouter()
 
-    @router.post(RESOLVE_PATH, response_model=None)
+    @router.post(
+        RESOLVE_PATH,
+        response_model=None,
+        responses={
+            200: {
+                "model": A2UIFormDocumentV1,
+                "description": "Validated A2UI Form Profile v1 snapshot.",
+            },
+            400: {"model": FormResolveErrorV1},
+            401: {"model": FormResolveErrorV1},
+            403: {"model": FormResolveErrorV1},
+            404: {"model": FormResolveErrorV1},
+            422: {"model": FormResolveErrorV1},
+            500: {"model": FormResolveErrorV1},
+        },
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": FormResolveRequestV1.model_json_schema()
+                    }
+                },
+            }
+        },
+    )
     async def resolve_form(request: Request) -> JSONResponse:
         parsed = await _parse_resolve_request(request)
         if isinstance(parsed, JSONResponse):
