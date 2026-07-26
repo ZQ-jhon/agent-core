@@ -7,7 +7,7 @@ import { expect, test } from '@playwright/test'
 
 test.describe('Confirmation dialog modal isolation', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/e2e-fixture.html?scenario=confirmation-dialog')
+    await page.goto('/e2e/fixtures/fixture.html?scenario=confirmation-dialog')
     await page.waitForSelector('form')
   })
 
@@ -73,8 +73,16 @@ test.describe('Confirmation dialog modal isolation', () => {
     const dialog = page.locator('[role="dialog"]')
     await expect(dialog).toBeVisible()
 
-    // Since inert is on the form, we can't normally click background elements.
-    // But we can test the global Escape handler by pressing Escape on the document body.
+    // Move focus outside the dialog (focusIn trap will pull it back, but we
+    // programmatically place it on body to verify global Escape still fires).
+    await page.evaluate(() => {
+      // The form is inert → its children can't be focused. Focus body instead.
+      (document.activeElement as HTMLElement)?.blur()
+    })
+    // Verify dialog is still visible despite focus change.
+    await expect(dialog).toBeVisible()
+
+    // Global Escape listener on document should still cancel.
     await page.keyboard.press('Escape')
     await expect(dialog).not.toBeVisible()
   })
@@ -94,7 +102,7 @@ test.describe('Confirmation dialog modal isolation', () => {
 
 test.describe('Collapsed section error links', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/e2e-fixture.html?scenario=collapsed-section')
+    await page.goto('/e2e/fixtures/fixture.html?scenario=collapsed-section')
     await page.waitForSelector('form')
   })
 
@@ -130,18 +138,28 @@ test.describe('Collapsed section error links', () => {
 
 test.describe('Upload keyboard and announcement paths', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/e2e-fixture.html?scenario=upload')
+    await page.goto('/e2e/fixtures/fixture.html?scenario=upload')
     await page.waitForSelector('form')
   })
 
   test('choose-file button is keyboard-triggerable via Enter', async ({ page }) => {
     const chooseFile = page.locator('button:has-text("Choose file")')
     await chooseFile.focus()
+
+    // Listen for the native file chooser dialog triggered by Enter on the button.
+    const fileChooserPromise = page.waitForEvent('filechooser')
     await page.keyboard.press('Enter')
 
-    // The hidden file input's click should have been triggered — verify via file chooser dialog
-    // (in headless mode we can't fully verify the native dialog, but there's no error)
-    // The fact that no error is thrown is the pass condition
+    // Must receive the filechooser event — proves Enter triggered the hidden input's click.
+    const fileChooser = await fileChooserPromise
+    await fileChooser.setFiles({
+      name: 'kb-trigger.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from('kb-test'),
+    })
+
+    // File should appear in the upload list (the list item specifically).
+    await expect(page.getByRole('listitem').filter({ hasText: 'kb-trigger.png' })).toBeVisible()
   })
 
   test('upload progress is surfaced in an aria-live region', async ({ page }) => {
@@ -195,6 +213,11 @@ test.describe('Upload keyboard and announcement paths', () => {
     const removeButton = page.locator('button:has-text("Remove fail.png")')
     await expect(removeButton).toBeVisible()
 
+    // The live region should announce the failure.
+    const liveRegion = page.locator('[role="status"][aria-live="polite"]')
+    await expect(liveRegion).toContainText('fail.png')
+    await expect(liveRegion).toContainText('Upload failed')
+
     // Click Remove
     await removeButton.click()
 
@@ -246,7 +269,7 @@ test.describe('Upload keyboard and announcement paths', () => {
 
 test.describe('submitOnEnter keyboard behavior', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/e2e-fixture.html?scenario=submit-on-enter')
+    await page.goto('/e2e/fixtures/fixture.html?scenario=submit-on-enter')
     await page.waitForSelector('form')
   })
 
@@ -254,11 +277,13 @@ test.describe('submitOnEnter keyboard behavior', () => {
     const nameField = page.getByLabel(/Name/)
     await nameField.focus()
     await nameField.fill('Ada')
+
+    // Press Enter — the single submit source should fire.
     await page.keyboard.press('Enter')
 
-    // The form should have submitted - we check by looking for the submitting state
-    // In a real test we'd check the controller, but for browser-level we verify
-    // that the Enter in a text input doesn't get swallowed silently
+    // The submit button should transition to aria-busy while submitting.
+    const submitButton = page.locator('button:has-text("Submit")')
+    await expect(submitButton).toHaveAttribute('aria-busy')
   })
 
   test('Enter in TextArea does NOT trigger submit', async ({ page }) => {

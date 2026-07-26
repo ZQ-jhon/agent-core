@@ -17,9 +17,4 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: 'pnpm preview',
-    url: 'http://localhost:4173',
-    reuseExistingServer: false,
-  },
 })

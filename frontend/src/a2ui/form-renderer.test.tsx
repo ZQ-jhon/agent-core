@@ -577,9 +577,9 @@ describe('A2UI form renderer', () => {
     expect(controller.getValue('/files')).toEqual([])
 
     fireEvent.change(fileInput, { target: { files: [new File(['ok'], 'notes.txt', { type: 'text/plain' })] } })
-    expect(screen.getByText(/This file type is not accepted/)).toBeInTheDocument()
+    expect(screen.getAllByText(/This file type is not accepted/).length).toBeGreaterThanOrEqual(1)
     fireEvent.change(fileInput, { target: { files: [new File(['12345'], 'large.png', { type: 'image/png' })] } })
-    expect(screen.getByText(/This file exceeds the maximum allowed size/)).toBeInTheDocument()
+    expect(screen.getAllByText(/This file exceeds the maximum allowed size/).length).toBeGreaterThanOrEqual(1)
     expect(upload).toHaveBeenCalledTimes(1)
   })
 
@@ -679,5 +679,104 @@ describe('A2UI form renderer', () => {
     expect(screen.queryByRole('link', { name: 'data' })).not.toBeInTheDocument()
     expect(screen.getByText('<img src=x>')).toBeInTheDocument()
     expect(screen.queryByText('img', { selector: 'img' })).not.toBeInTheDocument()
+  })
+
+  it('announces failed upload status in the aria-live region and disables Retry/Remove when the field is disabled', async () => {
+    const document = documentWith(
+      { files: [] },
+      [{ id: 'files', type: 'Upload', props: { label: 'Files', disabled: true }, children: [], dataPath: '/files', action: { actionId: 'upload' } }],
+      [{ id: 'upload', type: 'upload', endpointKey: 'files.upload', method: 'POST' }],
+    )
+    const controller = createA2UIFormController(document)
+    let rejectUpload: ((error: Error) => void) | undefined
+    const upload = vi.fn((_request: A2UIUploadRequest) => new Promise<{ readonly fileId: string }>((_resolve, reject) => {
+      rejectUpload = reject
+    }))
+    render(<A2UIFormRenderer controller={controller} document={document} upload={upload} />)
+
+    const fileInput = screen.getByLabelText('Files') as HTMLInputElement
+    fireEvent.change(fileInput, { target: { files: [new File(['x'], 'fail.png', { type: 'image/png' })] } })
+
+    // Reject — the live region must announce the failure.
+    rejectUpload?.(new Error('Upload failed'))
+    const liveRegion = await screen.findByRole('status', { name: 'Files upload progress' })
+    await waitFor(() => expect(liveRegion).toHaveTextContent('fail.png'))
+    await waitFor(() => expect(liveRegion).toHaveTextContent('Upload failed'))
+
+    // Since the field is disabled (schema-level), Retry/Remove must be disabled.
+    const retryButton = screen.getByRole('button', { name: 'Retry fail.png' })
+    const removeButton = screen.getByRole('button', { name: 'Remove fail.png' })
+    expect(retryButton).toBeDisabled()
+    expect(removeButton).toBeDisabled()
+  })
+
+  it('isolates only the correct form in a multi-instance page via instance-level formRef', async () => {
+    const document1 = documentWith(
+      { name: 'First' },
+      [
+        { id: 'name1', type: 'TextInput', props: { label: 'Name' }, children: [], dataPath: '/name' },
+        {
+          id: 'reset1',
+          type: 'Button',
+          props: { label: 'Reset Form 1' },
+          children: [],
+          action: { actionId: 'reset1', confirm: { title: 'Discard edits?', message: 'Form 1' } },
+        },
+      ],
+      [{ id: 'reset1', type: 'reset' }],
+    )
+    const document2 = parseDocument({
+      schemaVersion: '1.0.0',
+      requestId: 'request-2',
+      formId: 'form-2',
+      revision: 1,
+      root: {
+        id: 'form-root-2',
+        type: 'Form',
+        props: {},
+        children: [
+          { id: 'name2', type: 'TextInput', props: { label: 'Name' }, children: [], dataPath: '/name' },
+          {
+            id: 'reset2',
+            type: 'Button',
+            props: { label: 'Reset Form 2' },
+            children: [],
+            action: { actionId: 'reset2', confirm: { title: 'Discard edits?', message: 'Form 2' } },
+          },
+        ],
+      },
+      data: { initialValues: { name: 'Second' } },
+      actions: [{ id: 'reset2', type: 'reset' }],
+      dataSources: [],
+    })
+    const controller1 = createA2UIFormController(document1)
+    const controller2 = createA2UIFormController(document2)
+
+    render(
+      <>
+        <A2UIFormRenderer controller={controller1} document={document1} />
+        <A2UIFormRenderer controller={controller2} document={document2} />
+      </>,
+    )
+
+    const form1 = window.document.querySelectorAll('form')[0]!
+    const form2 = window.document.querySelectorAll('form')[1]!
+
+    // Open dialog on Form 1 — only Form 1 gets inert.
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Form 1' }))
+    await screen.findByRole('dialog', { name: 'Discard edits?' })
+    expect(form1.hasAttribute('inert')).toBe(true)
+    expect(form2.hasAttribute('inert')).toBe(false)
+
+    // Cancel Form 1 dialog.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(form1.hasAttribute('inert')).toBe(false)
+
+    // Open dialog on Form 2 — only Form 2 gets inert.
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Form 2' }))
+    await screen.findByRole('dialog', { name: 'Discard edits?' })
+    expect(form1.hasAttribute('inert')).toBe(false)
+    expect(form2.hasAttribute('inert')).toBe(true)
   })
 })

@@ -5,12 +5,12 @@
  */
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { A2UIFormRenderer, type A2UIUploadRequest } from './a2ui/form-renderer.tsx'
-import { createA2UIFormController } from './a2ui/form-state.ts'
-import { parseA2UIFormDocument } from './a2ui/parser.ts'
+import { A2UIFormRenderer, type A2UIUploadRequest } from '../../src/a2ui/form-renderer.tsx'
+import { createA2UIFormController } from '../../src/a2ui/form-state.ts'
+import { parseA2UIFormDocument } from '../../src/a2ui/parser.ts'
 import type {
   NormalizedA2UIFormDocumentV1,
-} from './a2ui/types.ts'
+} from '../../src/a2ui/types.ts'
 
 declare global {
   interface Window {

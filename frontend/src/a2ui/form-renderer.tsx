@@ -83,6 +83,7 @@ interface RendererContextValue {
   readonly controller: A2UIFormController
   readonly document: NormalizedA2UIFormDocumentV1
   readonly expandSection: (sectionId: StableId) => void
+  readonly formRef: React.RefObject<HTMLFormElement | null>
   readonly onRenderDiagnostic?: (diagnostic: SchemaDiagnostic) => void
   readonly registerSectionExpander: (sectionId: StableId, expand: () => void) => () => void
   readonly remoteOptions: Readonly<Record<string, readonly Option[]>>
@@ -121,6 +122,7 @@ export function A2UIFormRenderer({
   const state = useA2UIFormState(controller)
   const actionsById = new Map(document.actions.map((action) => [action.id, action]))
   const sectionExpanders = useRef(new Map<StableId, () => void>())
+  const formRef = useRef<HTMLFormElement | null>(null)
   const expandSection = useCallback((sectionId: StableId): void => {
     sectionExpanders.current.get(sectionId)?.()
   }, [])
@@ -140,6 +142,7 @@ export function A2UIFormRenderer({
         controller,
         document,
         expandSection,
+        formRef,
         onRenderDiagnostic,
         registerSectionExpander,
         remoteOptions,
@@ -266,6 +269,7 @@ function FormComponent({ node }: { readonly node: FormNode }) {
         data-a2ui-component-id={node.id}
         onKeyDown={handleKeyDown}
         onSubmit={handleSubmit}
+        ref={context.formRef}
       >
         {node.props.title === undefined ? null : <h1 id={titleId}>{node.props.title}</h1>}
         {node.props.description === undefined ? null : <p>{node.props.description}</p>}
@@ -333,20 +337,27 @@ function ConfirmationDialog() {
   const confirmation = binding?.confirm
   const isOpen = context.state.submission.status === 'awaiting_confirmation' && confirmation !== undefined
 
-  // Apply inert to the form when dialog is open. The dialog is a sibling of the
-  // form, so inert on the form only blocks background interaction.
+  // Apply inert to the instance's form when dialog is open. Uses the
+  // instance-level formRef from context — works correctly with multiple
+  // A2UIFormRenderer instances. Preserves any pre-existing host `inert`.
+  const savedInertRef = useRef<boolean | undefined>(undefined)
   useEffect(() => {
-    if (!isOpen) {
+    const form = context.formRef.current
+    if (form === null || form === undefined) {
       return undefined
     }
-    const form = document.querySelector<HTMLFormElement>('form[data-a2ui-component-id]')
-    if (form !== null) {
+    if (isOpen) {
+      savedInertRef.current = form.hasAttribute('inert') ? true : form.getAttribute('inert') === '' ? false : undefined
       form.setAttribute('inert', '')
       return () => {
-        form.removeAttribute('inert')
+        if (savedInertRef.current === true) {
+          form.setAttribute('inert', '')
+        } else if (savedInertRef.current === undefined) {
+          form.removeAttribute('inert')
+        }
       }
     }
-  }, [isOpen])
+  }, [context.formRef, isOpen])
 
   // Global Escape listener — cancels dialog regardless of where focus has drifted.
   useEffect(() => {
@@ -905,7 +916,12 @@ function UploadComponent({ node }: { readonly node: UploadNode }) {
             {pendingUploads
               .filter((upload) => upload.status === 'uploading')
               .map((upload) => (
-                <span key={upload.id}>{upload.file.name}: {upload.progress}% uploaded.</span>
+                <span key={`progress-${upload.id}`}>{upload.file.name}: {upload.progress}% uploaded.</span>
+              ))}
+            {pendingUploads
+              .filter((upload) => upload.status === 'failed')
+              .map((upload) => (
+                <span key={`failed-${upload.id}`}>{upload.file.name}: {upload.message ?? 'Upload failed.'}</span>
               ))}
           </div>
           {attachments.length === 0 && pendingUploads.length === 0 ? null : (
@@ -920,10 +936,10 @@ function UploadComponent({ node }: { readonly node: UploadNode }) {
                 <li key={upload.id}>
                   {upload.file.name} — {upload.status === 'uploading' ? `${upload.progress}% uploaded` : upload.message}
                   {upload.status === 'failed' && upload.retryable ? (
-                    <button onClick={() => startUpload(upload.file, upload.id)} type="button">Retry {upload.file.name}</button>
+                    <button disabled={control.disabled} onClick={() => startUpload(upload.file, upload.id)} type="button">Retry {upload.file.name}</button>
                   ) : null}
                   {upload.status === 'failed' ? (
-                    <button onClick={() => {
+                    <button disabled={control.disabled} onClick={() => {
                       setPendingUploads((current) => current.filter((pending) => pending.id !== upload.id))
                     }} type="button">Remove {upload.file.name}</button>
                   ) : null}
