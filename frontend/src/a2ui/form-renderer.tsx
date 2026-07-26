@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -13,7 +14,9 @@ import type {
   A2UIFormState,
   FormComponentState,
 } from './form-state.ts'
+import type { UploadValue } from './bound-value.ts'
 import { ComponentRenderBoundary, UnsupportedComponentPlaceholder } from './safe-rendering.tsx'
+import { SafeMarkdown } from './safe-markdown.tsx'
 import type { SchemaDiagnostic } from './errors.ts'
 import type {
   ActionBinding,
@@ -53,13 +56,38 @@ type FieldNode =
   | SwitchNode
   | UploadNode
 
+type UploadActionDefinition = Extract<ActionDefinition, { readonly type: 'upload' }>
+
+/** A host-owned upload invocation. The renderer never resolves endpoints or calls fetch. */
+export interface A2UIUploadRequest {
+  readonly action: UploadActionDefinition
+  readonly componentId: StableId
+  readonly dataPath: DataPath
+  readonly file: File
+  readonly reportProgress: (percent: number) => void
+}
+
+/** The only host result that may be committed to an Upload dataPath after success. */
+export interface A2UIUploadResult {
+  readonly fileId: string
+  readonly name?: string
+  readonly size?: number
+  readonly mimeType?: string
+}
+
+/** Trusted hosts implement endpoint lookup, authentication, and file transfer outside the schema renderer. */
+export type A2UIUploadTransport = (request: A2UIUploadRequest) => Promise<A2UIUploadResult>
+
 interface RendererContextValue {
   readonly actionsById: ReadonlyMap<StableId, ActionDefinition>
   readonly controller: A2UIFormController
   readonly document: NormalizedA2UIFormDocumentV1
+  readonly expandSection: (sectionId: StableId) => void
   readonly onRenderDiagnostic?: (diagnostic: SchemaDiagnostic) => void
+  readonly registerSectionExpander: (sectionId: StableId, expand: () => void) => () => void
   readonly remoteOptions: Readonly<Record<string, readonly Option[]>>
   readonly state: A2UIFormState
+  readonly upload?: A2UIUploadTransport
 }
 
 interface FieldControlProps {
@@ -88,13 +116,36 @@ export function A2UIFormRenderer({
   document,
   onRenderDiagnostic,
   remoteOptions = {},
+  upload,
 }: A2UIFormRendererProps) {
   const state = useA2UIFormState(controller)
   const actionsById = new Map(document.actions.map((action) => [action.id, action]))
+  const sectionExpanders = useRef(new Map<StableId, () => void>())
+  const expandSection = useCallback((sectionId: StableId): void => {
+    sectionExpanders.current.get(sectionId)?.()
+  }, [])
+  const registerSectionExpander = useCallback((sectionId: StableId, expand: () => void): (() => void) => {
+    sectionExpanders.current.set(sectionId, expand)
+    return () => {
+      if (sectionExpanders.current.get(sectionId) === expand) {
+        sectionExpanders.current.delete(sectionId)
+      }
+    }
+  }, [])
 
   return (
     <rendererContext.Provider
-      value={{ actionsById, controller, document, onRenderDiagnostic, remoteOptions, state }}
+      value={{
+        actionsById,
+        controller,
+        document,
+        expandSection,
+        onRenderDiagnostic,
+        registerSectionExpander,
+        remoteOptions,
+        state,
+        upload,
+      }}
     >
       <RenderedNode node={document.root} />
     </rendererContext.Provider>
@@ -107,6 +158,8 @@ export interface A2UIFormRendererProps {
   /** Trusted host-provided values for declared remote option sources; no HTTP is performed here. */
   readonly remoteOptions?: Readonly<Record<string, readonly Option[]>>
   readonly onRenderDiagnostic?: (diagnostic: SchemaDiagnostic) => void
+  /** Trusted host bridge for upload actions; without it Upload renders an explicit unavailable state. */
+  readonly upload?: A2UIUploadTransport
 }
 
 function RenderedNode({ node }: { readonly node: ComponentNode }) {
@@ -227,6 +280,16 @@ function FormErrorSummary({ ref }: { readonly ref: React.RefObject<HTMLElement |
   const context = useRendererContext()
   const { errors, showErrorSummary, submission } = context.state
   const titleId = makeDomId(context.document.formId, 'error-summary-title')
+
+  function revealAndFocusControl(dataPath: DataPath, controlId: string): void {
+    for (const sectionId of findCollapsibleSectionIdsForPath(context.document.root, dataPath)) {
+      context.expandSection(sectionId)
+    }
+    // Section state is committed after this click handler. Defer focus until the
+    // newly-expanded control is available, while retaining the real fragment URL.
+    window.setTimeout(() => document.getElementById(controlId)?.focus(), 0)
+  }
+
   if (!showErrorSummary || errors.summary.length === 0) {
     return null
   }
@@ -239,7 +302,9 @@ function FormErrorSummary({ ref }: { readonly ref: React.RefObject<HTMLElement |
           const controlId = error.path === undefined ? undefined : findControlIdForPath(context.document.root, error.path)
           return (
             <li key={`${error.code}:${error.path ?? 'form'}:${index}`}>
-              {controlId === undefined ? error.message : <a href={`#${controlId}`}>{error.message}</a>}
+              {controlId === undefined || error.path === undefined
+                ? error.message
+                : <a href={`#${controlId}`} onClick={() => revealAndFocusControl(error.path!, controlId)}>{error.message}</a>}
             </li>
           )
         })}
@@ -255,35 +320,77 @@ function FormErrorSummary({ ref }: { readonly ref: React.RefObject<HTMLElement |
 
 function ConfirmationDialog() {
   const context = useRendererContext()
+  const dialogRef = useRef<HTMLElement>(null)
   const confirmButtonRef = useRef<HTMLButtonElement>(null)
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null)
+  const restoreFocusPendingRef = useRef(false)
+  const wasOpenRef = useRef(false)
   const titleId = makeDomId(context.document.formId, 'confirmation-title')
+  const descriptionId = makeDomId(context.document.formId, 'confirmation-description')
   const sourceId = context.state.submission.sourceComponentId
   const binding = sourceId === undefined ? undefined : findActionBinding(context.document.root, sourceId)
   const confirmation = binding?.confirm
+  const isOpen = context.state.submission.status === 'awaiting_confirmation' && confirmation !== undefined
 
   useEffect(() => {
-    if (context.state.submission.status === 'awaiting_confirmation') {
+    if (isOpen) {
+      const activeElement = document.activeElement
+      previouslyFocusedRef.current = (sourceId === undefined ? undefined : findActionSourceElement(sourceId))
+        ?? (activeElement instanceof HTMLElement ? activeElement : null)
+      wasOpenRef.current = true
       confirmButtonRef.current?.focus()
+      return
     }
-  }, [context.state.submission.status])
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false
+      restoreFocusPendingRef.current = true
+    }
+    const previousFocus = previouslyFocusedRef.current
+    if (!isOpen && restoreFocusPendingRef.current && previousFocus !== null && !previousFocus.matches(':disabled')) {
+      previousFocus.focus()
+      restoreFocusPendingRef.current = false
+      previouslyFocusedRef.current = null
+    }
+  }, [context.state.submission.status, isOpen])
 
-  if (context.state.submission.status !== 'awaiting_confirmation' || confirmation === undefined) {
+  if (!isOpen || confirmation === undefined) {
     return null
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>): void {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      context.controller.cancelPendingAction()
+      return
+    }
+    if (event.key !== 'Tab') {
+      return
+    }
+    const focusable = getFocusableElements(dialogRef.current)
+    if (focusable.length === 0) {
+      event.preventDefault()
+      return
+    }
+    const activeElement = document.activeElement
+    const activeIndex = focusable.indexOf(activeElement as HTMLElement)
+    const nextIndex = event.shiftKey
+      ? activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1
+      : activeIndex === -1 || activeIndex >= focusable.length - 1 ? 0 : activeIndex + 1
+    event.preventDefault()
+    focusable[nextIndex]!.focus()
   }
 
   return (
     <section
+      aria-describedby={descriptionId}
       aria-labelledby={titleId}
       aria-modal="true"
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          context.controller.cancelPendingAction()
-        }
-      }}
+      onKeyDown={handleKeyDown}
+      ref={dialogRef}
       role="dialog"
     >
       <h2 id={titleId}>{confirmation.title}</h2>
-      <p>{confirmation.message}</p>
+      <p id={descriptionId}>{confirmation.message}</p>
       <button onClick={() => void context.controller.confirmPendingAction()} ref={confirmButtonRef} type="button">
         {confirmation.confirmLabel ?? 'Confirm'}
       </button>
@@ -295,9 +402,18 @@ function ConfirmationDialog() {
 }
 
 function SectionComponent({ node }: { readonly node: SectionNode }) {
+  const context = useRendererContext()
   const [collapsed, setCollapsed] = useState(node.props.collapsible === true && node.props.defaultCollapsed === true)
   const contentId = makeDomId(node.id, 'content')
   const titleId = makeDomId(node.id, 'title')
+  const expand = useCallback(() => setCollapsed(false), [])
+
+  useEffect(() => {
+    if (node.props.collapsible !== true) {
+      return undefined
+    }
+    return context.registerSectionExpander(node.id, expand)
+  }, [context.registerSectionExpander, expand, node.id, node.props.collapsible])
 
   return (
     <section aria-labelledby={titleId} data-a2ui-component-id={node.id}>
@@ -378,22 +494,32 @@ function NumberInputComponent({ node }: { readonly node: NumberInputNode }) {
   function updateDraft(rawValue: string): void {
     setDraft(rawValue)
     if (rawValue === '') {
+      context.controller.setTransientError(node.dataPath)
       context.controller.setValue(node.dataPath, null)
       return
     }
-    const parsed = Number(rawValue)
-    if (Number.isFinite(parsed)) {
+    const parsed = parseCompleteNumberDraft(rawValue)
+    if (parsed !== undefined) {
+      context.controller.setTransientError(node.dataPath)
       context.controller.setValue(node.dataPath, parsed)
     }
   }
 
-  function normalizeOnBlur(): void {
-    if (draft !== '') {
-      const parsed = Number(draft)
-      if (Number.isFinite(parsed)) {
+  function normalizeAndValidate(): void {
+    if (draft === '') {
+      context.controller.setTransientError(node.dataPath)
+      context.controller.setValue(node.dataPath, null)
+    } else {
+      const parsed = parseNumberOnBlur(draft)
+      if (parsed !== undefined) {
+        context.controller.setTransientError(node.dataPath)
         context.controller.setValue(node.dataPath, parsed)
+        setDraft(String(parsed))
       } else {
-        setDraft(toNumberDraft(context.state.fields[node.dataPath]?.value))
+        context.controller.setTransientError(node.dataPath, {
+          code: 'NUMBER_INVALID',
+          message: 'Enter a valid number.',
+        })
       }
     }
     context.controller.blur(node.dataPath)
@@ -405,11 +531,17 @@ function NumberInputComponent({ node }: { readonly node: NumberInputNode }) {
         <>
           <input
             {...control}
-            onBlur={normalizeOnBlur}
+            data-a2ui-step={node.props.step}
+            inputMode="decimal"
+            onBlur={normalizeAndValidate}
             onChange={(event) => updateDraft(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                normalizeAndValidate()
+              }
+            }}
             placeholder={node.props.placeholder}
-            step={node.props.step}
-            type="number"
+            type="text"
             value={draft}
           />
           {node.props.unit === undefined ? null : <span id={unitId}>{node.props.unit}</span>}
@@ -473,15 +605,20 @@ function RadioGroupComponent({ node }: { readonly node: RadioGroupNode }) {
     <ChoiceGroupFrame node={node}>
       {node.props.options.map((option, index) => {
         const optionId = makeDomId(node.id, `option-${index}`)
+        const disabled = isFieldDisabled(node, context.state) || option.disabled === true
         return (
           <label htmlFor={optionId} key={`${node.id}:${index}`}>
             <input
               checked={sameOptionValue(value, option.value)}
-              disabled={isFieldDisabled(node, context.state)}
+              disabled={disabled}
               id={optionId}
               name={makeDomId(node.id, 'radio')}
               onBlur={() => context.controller.blur(node.dataPath)}
-              onChange={() => context.controller.setValue(node.dataPath, option.value)}
+              onChange={() => {
+                if (!disabled) {
+                  context.controller.setValue(node.dataPath, option.value)
+                }
+              }}
               type="radio"
               value={String(index)}
             />
@@ -502,14 +639,18 @@ function CheckboxGroupComponent({ node }: { readonly node: CheckboxGroupNode }) 
       {node.props.options.map((option, index) => {
         const optionId = makeDomId(node.id, `option-${index}`)
         const checked = selectedValues.some((value) => sameOptionValue(value, option.value))
+        const disabled = isFieldDisabled(node, context.state) || option.disabled === true
         return (
           <label htmlFor={optionId} key={`${node.id}:${index}`}>
             <input
               checked={checked}
-              disabled={isFieldDisabled(node, context.state)}
+              disabled={disabled}
               id={optionId}
               onBlur={() => context.controller.blur(node.dataPath)}
               onChange={() => {
+                if (disabled) {
+                  return
+                }
                 const nextValues = checked
                   ? selectedValues.filter((value) => !sameOptionValue(value, option.value))
                   : [...selectedValues, option.value]
@@ -572,9 +713,92 @@ function SwitchComponent({ node }: { readonly node: SwitchNode }) {
 
 function UploadComponent({ node }: { readonly node: UploadNode }) {
   const context = useRendererContext()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [pendingUploads, setPendingUploads] = useState<readonly PendingUpload[]>([])
   const statusId = makeDomId(node.id, 'upload-status')
   const value = context.state.fields[node.dataPath]?.value
-  const attachmentCount = Array.isArray(value) ? value.length : 0
+  const attachments = getUploadedAttachments(value)
+  const maxFiles = node.props.maxFiles ?? 1
+  const action = context.actionsById.get(node.action.actionId)
+  const uploadAction = action?.type === 'upload' ? action : undefined
+  const bridgeAvailable = context.upload !== undefined && uploadAction !== undefined
+  const activeUploadCount = pendingUploads.filter((upload) => upload.status === 'uploading').length
+  const limitReached = attachments.length + activeUploadCount >= maxFiles
+
+  function addFailure(file: File, message: string, retryable: boolean): void {
+    setPendingUploads((current) => [
+      ...current,
+      { id: createUploadTaskId(), file, message, progress: 0, retryable, status: 'failed' },
+    ])
+  }
+
+  function startUpload(file: File, retryId?: string): void {
+    if (context.upload === undefined || uploadAction === undefined) {
+      addFailure(file, 'File upload is unavailable until the host provides an upload transport.', false)
+      return
+    }
+    const taskId = retryId ?? createUploadTaskId()
+    setPendingUploads((current) => {
+      const next = { id: taskId, file, message: undefined, progress: 0, retryable: false, status: 'uploading' as const }
+      return retryId === undefined ? [...current, next] : current.map((upload) => upload.id === taskId ? next : upload)
+    })
+
+    void context.upload({
+      action: uploadAction,
+      componentId: node.id,
+      dataPath: node.dataPath,
+      file,
+      reportProgress: (percent) => {
+        const progress = clampUploadProgress(percent)
+        setPendingUploads((current) => current.map((upload) => upload.id === taskId
+          ? { ...upload, progress }
+          : upload))
+      },
+    }).then((result) => {
+      const uploaded = toUploadValue(result, file)
+      if (uploaded === undefined) {
+        throw new Error('invalid_upload_reference')
+      }
+      const current = getUploadedAttachments(context.controller.getValue(node.dataPath))
+      if (current.length >= maxFiles || !context.controller.setValue(node.dataPath, [...current, uploaded])) {
+        throw new Error('upload_result_rejected')
+      }
+      setPendingUploads((currentPending) => currentPending.filter((upload) => upload.id !== taskId))
+    }).catch(() => {
+      setPendingUploads((current) => current.map((upload) => upload.id === taskId
+        ? { ...upload, message: 'Upload failed. Retry the file.', retryable: true, status: 'failed' as const }
+        : upload))
+    })
+  }
+
+  function handleFileSelection(files: FileList | null): void {
+    if (files === null || !bridgeAvailable || limitReached) {
+      return
+    }
+    let remainingSlots = maxFiles - attachments.length - activeUploadCount
+    for (const file of Array.from(files)) {
+      if (remainingSlots <= 0) {
+        addFailure(file, `A maximum of ${maxFiles} file${maxFiles === 1 ? '' : 's'} can be attached.`, false)
+        continue
+      }
+      if (!isAcceptedUploadFile(file, node.props.accept)) {
+        addFailure(file, 'This file type is not accepted.', false)
+        continue
+      }
+      if (node.props.maxSizeBytes !== undefined && file.size > node.props.maxSizeBytes) {
+        addFailure(file, 'This file exceeds the maximum allowed size.', false)
+        continue
+      }
+      remainingSlots -= 1
+      startUpload(file)
+    }
+  }
+
+  function removeAttachment(index: number): void {
+    const next = attachments.filter((_, attachmentIndex) => attachmentIndex !== index)
+    context.controller.setValue(node.dataPath, next)
+  }
+
   return (
     <FieldFrame node={node} supplementaryDescriptionIds={[statusId]}>
       {(control) => (
@@ -582,15 +806,55 @@ function UploadComponent({ node }: { readonly node: UploadNode }) {
           <input
             {...control}
             accept={node.props.accept?.join(',')}
-            disabled
-            multiple={(node.props.maxFiles ?? 1) > 1}
+            disabled={control.disabled || !bridgeAvailable || limitReached}
+            multiple={maxFiles > 1}
+            onBlur={() => context.controller.blur(node.dataPath)}
+            onChange={(event) => {
+              handleFileSelection(event.currentTarget.files)
+              event.currentTarget.value = ''
+            }}
+            ref={inputRef}
             type="file"
           />
+          <button
+            aria-describedby={statusId}
+            disabled={control.disabled || !bridgeAvailable || limitReached}
+            onClick={() => inputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                inputRef.current?.click()
+              }
+            }}
+            type="button"
+          >
+            {node.props.buttonLabel ?? 'Choose file'}
+          </button>
           <p id={statusId} role="status">
-            {attachmentCount === 0
-              ? 'File upload requires a host-provided upload transport.'
-              : `${attachmentCount} uploaded file${attachmentCount === 1 ? '' : 's'} are attached.`}
+            {!bridgeAvailable
+              ? 'File upload is unavailable until the host provides an upload transport.'
+              : limitReached
+                ? `The maximum of ${maxFiles} file${maxFiles === 1 ? '' : 's'} has been reached.`
+                : `${attachments.length} uploaded file${attachments.length === 1 ? '' : 's'} attached.`}
           </p>
+          {attachments.length === 0 && pendingUploads.length === 0 ? null : (
+            <ul aria-label={`${node.props.label} uploads`}>
+              {attachments.map((attachment, index) => (
+                <li key={`${attachment.fileId}:${index}`}>
+                  {attachment.name}
+                  <button disabled={control.disabled} onClick={() => removeAttachment(index)} type="button">Remove {attachment.name}</button>
+                </li>
+              ))}
+              {pendingUploads.map((upload) => (
+                <li key={upload.id}>
+                  {upload.file.name} — {upload.status === 'uploading' ? `${upload.progress}% uploaded` : upload.message}
+                  {upload.status === 'failed' && upload.retryable ? (
+                    <button onClick={() => startUpload(upload.file, upload.id)} type="button">Retry {upload.file.name}</button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
     </FieldFrame>
@@ -639,10 +903,9 @@ function AlertComponent({ node }: { readonly node: AlertNode }) {
 }
 
 function MarkdownComponent({ node }: { readonly node: MarkdownNode }) {
-  const paragraphs = node.props.content.split(/\n{2,}/).filter((paragraph) => paragraph.trim() !== '')
   return (
     <section aria-label={node.props.ariaLabel}>
-      {paragraphs.map((paragraph, index) => <p key={`${node.id}:${index}`}>{paragraph}</p>)}
+      <SafeMarkdown content={node.props.content} />
     </section>
   )
 }
@@ -748,6 +1011,134 @@ function toNumberDraft(value: JsonValue | undefined): string {
   return typeof value === 'number' ? String(value) : ''
 }
 
+function parseCompleteNumberDraft(value: string): number | undefined {
+  if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(value)) {
+    return undefined
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function parseNumberOnBlur(value: string): number | undefined {
+  if (!/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) {
+    return undefined
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function getFocusableElements(container: HTMLElement | null): readonly HTMLElement[] {
+  if (container === null) {
+    return []
+  }
+  return Array.from(container.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => element.getAttribute('aria-hidden') !== 'true')
+}
+
+function findActionSourceElement(componentId: StableId): HTMLElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-a2ui-action-source]'))
+    .find((element) => element.getAttribute('data-a2ui-action-source') === componentId)
+}
+
+function findCollapsibleSectionIdsForPath(root: ComponentNode, dataPath: DataPath): readonly StableId[] {
+  return findCollapsibleSectionIds(root, dataPath, []) ?? []
+}
+
+function findCollapsibleSectionIds(
+  node: ComponentNode,
+  dataPath: DataPath,
+  ancestorSections: readonly StableId[],
+): readonly StableId[] | undefined {
+  const nextAncestors = node.type === 'Section' && node.props.collapsible === true
+    ? [...ancestorSections, node.id]
+    : ancestorSections
+  if (node.dataPath === dataPath) {
+    return nextAncestors
+  }
+  for (const child of node.children) {
+    const result = findCollapsibleSectionIds(child, dataPath, nextAncestors)
+    if (result !== undefined) {
+      return result
+    }
+  }
+  return undefined
+}
+
+interface PendingUpload {
+  readonly id: string
+  readonly file: File
+  readonly message?: string
+  readonly progress: number
+  readonly retryable: boolean
+  readonly status: 'uploading' | 'failed'
+}
+
+let uploadTaskSequence = 0
+
+function createUploadTaskId(): string {
+  uploadTaskSequence += 1
+  return `upload-${uploadTaskSequence}`
+}
+
+function clampUploadProgress(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0
+}
+
+function getUploadedAttachments(value: JsonValue | undefined): readonly UploadValue[] {
+  return Array.isArray(value) ? value.filter(isUploadValue) : []
+}
+
+function isUploadValue(value: JsonValue): value is UploadValue {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Readonly<Record<string, JsonValue>>
+  return typeof record.fileId === 'string'
+    && typeof record.name === 'string'
+    && typeof record.size === 'number'
+    && Number.isFinite(record.size)
+    && typeof record.mimeType === 'string'
+    && record.status === 'uploaded'
+}
+
+function toUploadValue(result: A2UIUploadResult, file: File): UploadValue | undefined {
+  if (
+    typeof result.fileId !== 'string'
+    || (result.name !== undefined && typeof result.name !== 'string')
+    || (result.size !== undefined && (typeof result.size !== 'number' || !Number.isFinite(result.size)))
+    || (result.mimeType !== undefined && typeof result.mimeType !== 'string')
+  ) {
+    return undefined
+  }
+  const fileId = result.fileId.trim()
+  const name = result.name ?? file.name
+  const size = result.size ?? file.size
+  const mimeType = result.mimeType ?? file.type
+  if (fileId === '' || fileId.length > 512 || name.length > 1024 || !Number.isFinite(size) || size < 0 || mimeType.length > 255) {
+    return undefined
+  }
+  return { fileId, name, size, mimeType, status: 'uploaded' }
+}
+
+function isAcceptedUploadFile(file: File, accept: readonly string[] | undefined): boolean {
+  if (accept === undefined || accept.length === 0) {
+    return true
+  }
+  const fileName = file.name.toLowerCase()
+  const mimeType = file.type.toLowerCase()
+  return accept.some((rawAccept) => {
+    const accepted = rawAccept.trim().toLowerCase()
+    if (accepted.startsWith('.')) {
+      return fileName.endsWith(accepted)
+    }
+    if (accepted.endsWith('/*')) {
+      return mimeType.startsWith(accepted.slice(0, -1))
+    }
+    return mimeType === accepted
+  })
+}
+
 function findOptionIndex(value: JsonValue | undefined, options: readonly Option[]): number | undefined {
   const index = options.findIndex((option) => sameOptionValue(value, option.value))
   return index === -1 ? undefined : index
@@ -766,7 +1157,10 @@ function fieldDomIds(componentId: StableId): { readonly control: string; readonl
 }
 
 function makeDomId(componentId: StableId, suffix: string): string {
-  return `a2ui-${encodeURIComponent(componentId)}-${suffix}`
+  // Fragment identifiers percent-decode before lookup; percent escapes inside
+  // an element id therefore break legal StableIds such as `billing:amount`.
+  const encodedId = Array.from(componentId, (character) => character.charCodeAt(0).toString(36)).join('-')
+  return `a2ui-${encodedId}-${suffix}`
 }
 
 function findControlIdForPath(node: ComponentNode, dataPath: DataPath): string | undefined {

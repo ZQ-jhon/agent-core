@@ -33,6 +33,45 @@ const MAX_CONDITION_DEPTH = 16
 const MAX_JSON_VALUE_DEPTH = 64
 const MAX_SCHEMA_JSON_CHARACTERS = 1_000_000
 
+/**
+ * Schema input must not be able to select arbitrary browser autocomplete
+ * behavior. This is the small v1 protocol surface we intentionally support.
+ */
+const allowedAutoCompleteValues = new Set([
+  'off',
+  'name',
+  'honorific-prefix',
+  'given-name',
+  'additional-name',
+  'family-name',
+  'nickname',
+  'username',
+  'new-password',
+  'current-password',
+  'one-time-code',
+  'organization',
+  'street-address',
+  'address-line1',
+  'address-line2',
+  'address-level1',
+  'address-level2',
+  'postal-code',
+  'country',
+  'country-name',
+  'email',
+  'tel',
+  'tel-national',
+  'url',
+  'bday',
+  'sex',
+  'cc-name',
+  'cc-number',
+  'cc-exp',
+  'cc-exp-month',
+  'cc-exp-year',
+  'cc-csc',
+])
+
 type UnknownRecord = Record<string, unknown>
 
 interface ParseContext {
@@ -660,7 +699,7 @@ function parseProps(
       return {
         ...parseCommonInputProps(value, path, context),
         ...(withString(readString(context, value, 'placeholder', path, { max: 200 }), 'placeholder')),
-        ...(withString(readString(context, value, 'autoComplete', path, { max: 80 }), 'autoComplete')),
+        ...(withString(readAutoComplete(context, value, path), 'autoComplete')),
         ...(withEnum(readEnum(context, value, 'inputMode', path, ['text', 'email', 'tel', 'url', 'search'] as const))),
         readOnly: readBoolean(context, value, 'readOnly', path) ?? false,
       }
@@ -762,6 +801,20 @@ function parseCommonInputProps(value: UnknownRecord, path: string, context: Pars
     disabled: readBoolean(context, value, 'disabled', path) ?? false,
     visible: readBoolean(context, value, 'visible', path) ?? true,
   }
+}
+
+function readAutoComplete(context: ParseContext, value: UnknownRecord, path: string): string | undefined {
+  const autoComplete = readString(context, value, 'autoComplete', path, { max: 80 })
+  if (autoComplete !== undefined && !allowedAutoCompleteValues.has(autoComplete)) {
+    addError(
+      context,
+      'SCHEMA_INVALID',
+      'autoComplete must be one of the A2UI v1 allowlisted browser autocomplete tokens.',
+      `${path}/autoComplete`,
+    )
+    return undefined
+  }
+  return autoComplete
 }
 
 function parseSelectProps(value: UnknownRecord, path: string, context: ParseContext): ComponentPropsByType['Select'] {

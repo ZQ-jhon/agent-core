@@ -34,6 +34,7 @@ export type {
   FormFieldState,
   FormRuntimeDiagnostic,
   FormRuntimeDiagnosticCode,
+  FormTransientError,
   FormServerError,
   FormSubmissionResult,
   FormSubmissionState,
@@ -46,7 +47,13 @@ export type {
   FormSubmitTransport,
   FormSubmitValidationErrorResponse,
 } from './form-state.ts'
-export type { A2UIFormRendererProps } from './form-renderer.tsx'
+export type {
+  A2UIFormRendererProps,
+  A2UIUploadRequest,
+  A2UIUploadResult,
+  A2UIUploadTransport,
+} from './form-renderer.tsx'
+export type { UploadValue } from './bound-value.ts'
 export { A2UI_FORM_SCHEMA_VERSION } from './types.ts'
 export type {
   A2UIFormDocumentV1,

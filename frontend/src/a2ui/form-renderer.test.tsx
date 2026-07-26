@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createA2UIFormController } from './form-state.ts'
-import { A2UIFormRenderer } from './form-renderer.tsx'
+import { A2UIFormRenderer, type A2UIUploadRequest } from './form-renderer.tsx'
 import { parseA2UIFormDocument } from './parser.ts'
 import type { NormalizedA2UIFormDocumentV1 } from './types.ts'
 
@@ -69,7 +69,7 @@ describe('A2UI form renderer', () => {
 
     const name = screen.getByRole('textbox', { name: /Name/ })
     expect(name).toHaveAttribute('aria-required', 'true')
-    expect(name).toHaveAttribute('aria-describedby', expect.stringContaining('a2ui-name-help'))
+    expect(name).toHaveAttribute('aria-describedby', expect.stringContaining('-help'))
     expect(screen.getByText('Use your legal name')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Disabled name' })).toBeDisabled()
     expect(screen.queryByRole('textbox', { name: 'Hidden name' })).not.toBeInTheDocument()
@@ -80,7 +80,7 @@ describe('A2UI form renderer', () => {
     fireEvent.change(name, { target: { value: '' } })
     fireEvent.blur(name)
     expect(name).toHaveAttribute('aria-invalid', 'true')
-    expect(name).toHaveAttribute('aria-errormessage', 'a2ui-name-error')
+    expect(name).toHaveAttribute('aria-errormessage', expect.stringContaining('-error'))
     expect(screen.getByRole('alert')).toHaveTextContent('required')
   })
 
@@ -219,15 +219,17 @@ describe('A2UI form renderer', () => {
 
     const summary = await screen.findByRole('alert', { name: 'Please review the highlighted fields' })
     await waitFor(() => expect(summary).toHaveFocus())
-    expect(screen.getByRole('link', { name: /required/i })).toHaveAttribute('href', '#a2ui-name-control')
+    expect(screen.getByRole('link', { name: /required/i })).toHaveAttribute('href', `#${name.id}`)
     expect(submit).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reset with confirmation' }))
+    const resetWithConfirmation = screen.getByRole('button', { name: 'Reset with confirmation' })
+    fireEvent.click(resetWithConfirmation)
     const dialog = await screen.findByRole('dialog', { name: 'Reset form?' })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
     expect(screen.getByRole('button', { name: 'Confirm' })).toHaveFocus()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(resetWithConfirmation).toHaveFocus())
     expect(controller.getValue('/name')).toBe('Ada')
 
     fireEvent.keyDown(screen.getByRole('textbox', { name: /Name/ }), { key: 'Enter' })
@@ -266,10 +268,281 @@ describe('A2UI form renderer', () => {
     expect(screen.queryByRole('textbox', { name: 'Notes' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Details' }))
     expect(screen.getByRole('textbox', { name: 'Notes' })).toBeInTheDocument()
-    expect(screen.getByRole('spinbutton', { name: /Amount/ })).toHaveAttribute('aria-describedby', expect.stringContaining('unit'))
+    expect(screen.getByRole('textbox', { name: /Amount/ })).toHaveAttribute('aria-describedby', expect.stringContaining('unit'))
     expect(screen.getByLabelText('Files')).toBeDisabled()
-    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('host-provided upload transport') === true)).toBe(true)
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('host provides an upload transport') === true)).toBe(true)
     expect(screen.getByText('<strong>Plain text only</strong>')).toBeInTheDocument()
     expect(screen.queryByText('Plain text only', { selector: 'strong' })).not.toBeInTheDocument()
+  })
+
+  it('traps confirmation-dialog focus, exposes its description, cancels with Escape, and restores the trigger focus', async () => {
+    const document = documentWith(
+      { name: 'Ada' },
+      [
+        { id: 'name', type: 'TextInput', props: { label: 'Name' }, children: [], dataPath: '/name' },
+        {
+          id: 'reset',
+          type: 'Button',
+          props: { label: 'Reset' },
+          children: [],
+          action: { actionId: 'reset', confirm: { title: 'Discard edits?', message: 'This cannot be undone.' } },
+        },
+      ],
+      [{ id: 'reset', type: 'reset' }],
+    )
+    const controller = createA2UIFormController(document)
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    const trigger = screen.getByRole('button', { name: 'Reset' })
+    trigger.focus()
+    fireEvent.click(trigger)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Discard edits?' })
+    const confirm = screen.getByRole('button', { name: 'Confirm' })
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    expect(dialog).toHaveAttribute('aria-describedby')
+    expect(screen.getByText('This cannot be undone.')).toHaveAttribute('id', dialog.getAttribute('aria-describedby')!)
+    expect(confirm).toHaveFocus()
+
+    fireEvent.keyDown(confirm, { key: 'Tab' })
+    expect(cancel).toHaveFocus()
+    fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true })
+    expect(confirm).toHaveFocus()
+    fireEvent.keyDown(confirm, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
+  it('opens collapsed ancestor sections and focuses colon-id fields from an error-summary fragment link', async () => {
+    const document = documentWith(
+      { amount: '' },
+      [
+        {
+          id: 'billing:section',
+          type: 'Section',
+          props: { title: 'Billing', collapsible: true, defaultCollapsed: true },
+          children: [
+            {
+              id: 'billing:amount',
+              type: 'TextInput',
+              props: { label: 'Amount' },
+              children: [],
+              dataPath: '/amount',
+              validation: [{ type: 'required' }],
+            },
+          ],
+        },
+        { id: 'submit', type: 'Button', props: { label: 'Submit' }, children: [], action: { actionId: 'submit' } },
+      ],
+      [{ id: 'submit', type: 'submit', endpointKey: 'forms.submit', method: 'POST' }],
+    )
+    const controller = createA2UIFormController(document, {
+      submit: async () => ({ status: 'success', result: { submissionId: 'unused' } }),
+    })
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+    const link = await screen.findByRole('link', { name: /required/i })
+    expect(link).not.toHaveAttribute('href', expect.stringContaining('%'))
+    fireEvent.click(link)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Billing' })).toHaveAttribute('aria-expanded', 'true'))
+    const amount = screen.getByRole('textbox', { name: 'Amount (required)' })
+    await waitFor(() => expect(amount).toHaveFocus())
+    expect(link).toHaveAttribute('href', `#${amount.id}`)
+  })
+
+  it('prevents disabled RadioGroup and CheckboxGroup options from changing form state by mouse or keyboard events', () => {
+    const document = documentWith(
+      { plan: 'free', features: [] },
+      [
+        {
+          id: 'plan',
+          type: 'RadioGroup',
+          props: { label: 'Plan', options: [{ label: 'Free', value: 'free' }, { label: 'Enterprise', value: 'enterprise', disabled: true }] },
+          children: [],
+          dataPath: '/plan',
+        },
+        {
+          id: 'features',
+          type: 'CheckboxGroup',
+          props: { label: 'Features', options: [{ label: 'Audit log', value: 'audit', disabled: true }, { label: 'Export', value: 'export' }] },
+          children: [],
+          dataPath: '/features',
+        },
+      ],
+    )
+    const controller = createA2UIFormController(document)
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    const disabledRadio = screen.getByRole('radio', { name: 'Enterprise' })
+    const disabledCheckbox = screen.getByRole('checkbox', { name: 'Audit log' })
+    expect(disabledRadio).toBeDisabled()
+    expect(disabledCheckbox).toBeDisabled()
+    fireEvent.click(disabledRadio)
+    fireEvent.keyDown(disabledRadio, { key: ' ' })
+    fireEvent.change(disabledRadio, { target: { checked: true } })
+    fireEvent.click(disabledCheckbox)
+    fireEvent.keyDown(disabledCheckbox, { key: ' ' })
+    fireEvent.change(disabledCheckbox, { target: { checked: true } })
+    expect(controller.getValue('/plan')).toBe('free')
+    expect(controller.getValue('/features')).toEqual([])
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Export' }))
+    expect(controller.getValue('/features')).toEqual(['export'])
+  })
+
+  it('keeps negative and decimal NumberInput drafts editable, then normalizes or reports them only when committed', async () => {
+    const submit = vi.fn(async () => ({ status: 'success' as const, result: { submissionId: 'should-not-submit' } }))
+    const document = documentWith(
+      { amount: null },
+      [
+        {
+          id: 'amount',
+          type: 'NumberInput',
+          props: { label: 'Amount' },
+          children: [],
+          dataPath: '/amount',
+          validation: [{ type: 'required' }],
+        },
+        { id: 'submit', type: 'Button', props: { label: 'Submit' }, children: [], action: { actionId: 'submit' } },
+      ],
+      [{ id: 'submit', type: 'submit', endpointKey: 'forms.submit', method: 'POST' }],
+      { submitOnEnter: true },
+    )
+    const controller = createA2UIFormController(document, { submit })
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    const amount = screen.getByRole('textbox', { name: /Amount/ }) as HTMLInputElement
+    fireEvent.change(amount, { target: { value: '-' } })
+    expect(amount.value).toBe('-')
+    expect(controller.getValue('/amount')).toBe(null)
+    expect(amount).not.toHaveAttribute('aria-invalid', 'true')
+
+    fireEvent.change(amount, { target: { value: '-1.' } })
+    expect(amount.value).toBe('-1.')
+    fireEvent.blur(amount)
+    expect(amount.value).toBe('-1')
+    expect(controller.getValue('/amount')).toBe(-1)
+
+    fireEvent.change(amount, { target: { value: '-.5' } })
+    fireEvent.blur(amount)
+    expect(controller.getValue('/amount')).toBe(-0.5)
+    expect(amount.value).toBe('-0.5')
+
+    fireEvent.change(amount, { target: { value: '-.' } })
+    fireEvent.blur(amount)
+    expect(amount).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a valid number')
+
+    fireEvent.change(amount, { target: { value: '-' } })
+    fireEvent.keyDown(amount, { key: 'Enter' })
+    await waitFor(() => expect(amount).toHaveAttribute('aria-invalid', 'true'))
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('uses a host bridge for keyboard-triggerable uploads, commits only server file references, and enforces type and size limits', async () => {
+    const document = documentWith(
+      { files: [] },
+      [{ id: 'files', type: 'Upload', props: { label: 'Files', accept: ['image/*'], maxFiles: 2, maxSizeBytes: 4 }, children: [], dataPath: '/files', action: { actionId: 'upload' } }],
+      [{ id: 'upload', type: 'upload', endpointKey: 'files.upload', method: 'POST' }],
+    )
+    const controller = createA2UIFormController(document)
+    let resolveUpload: ((result: { readonly fileId: string }) => void) | undefined
+    const upload = vi.fn((request: A2UIUploadRequest) => {
+      request.reportProgress(45)
+      return new Promise<{ readonly fileId: string }>((resolve) => {
+        resolveUpload = resolve
+      })
+    })
+    render(<A2UIFormRenderer controller={controller} document={document} upload={upload} />)
+
+    const fileInput = screen.getByLabelText('Files') as HTMLInputElement
+    const chooseFile = screen.getByRole('button', { name: 'Choose file' })
+    const inputClick = vi.spyOn(fileInput, 'click')
+    fireEvent.keyDown(chooseFile, { key: 'Enter' })
+    expect(inputClick).toHaveBeenCalledTimes(1)
+
+    const image = new File(['1234'], 'avatar.png', { type: 'image/png' })
+    fireEvent.change(fileInput, { target: { files: [image] } })
+    expect(upload).toHaveBeenCalledTimes(1)
+    expect(screen.getByText(/45% uploaded/)).toBeInTheDocument()
+    expect(controller.getValue('/files')).toEqual([])
+
+    resolveUpload?.({ fileId: 'file-server-1' })
+    await waitFor(() => expect(controller.getValue('/files')).toEqual([
+      { fileId: 'file-server-1', name: 'avatar.png', size: 4, mimeType: 'image/png', status: 'uploaded' },
+    ]))
+    expect(JSON.stringify(controller.getSubmissionData())).not.toContain('blob:')
+    expect(controller.getSubmissionData()).toEqual({
+      files: [{ fileId: 'file-server-1', name: 'avatar.png', size: 4, mimeType: 'image/png', status: 'uploaded' }],
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove avatar.png' }))
+    expect(controller.getValue('/files')).toEqual([])
+
+    fireEvent.change(fileInput, { target: { files: [new File(['ok'], 'notes.txt', { type: 'text/plain' })] } })
+    expect(screen.getByText(/This file type is not accepted/)).toBeInTheDocument()
+    fireEvent.change(fileInput, { target: { files: [new File(['12345'], 'large.png', { type: 'image/png' })] } })
+    expect(screen.getByText(/This file exceeds the maximum allowed size/)).toBeInTheDocument()
+    expect(upload).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows failed uploads locally and retries them without ever writing a File object to form state', async () => {
+    const document = documentWith(
+      { files: [] },
+      [{ id: 'files', type: 'Upload', props: { label: 'Files' }, children: [], dataPath: '/files', action: { actionId: 'upload' } }],
+      [{ id: 'upload', type: 'upload', endpointKey: 'files.upload', method: 'POST' }],
+    )
+    const controller = createA2UIFormController(document)
+    let attempt = 0
+    const upload = vi.fn(async (_request: A2UIUploadRequest) => {
+      attempt += 1
+      if (attempt === 1) {
+        throw new Error('offline')
+      }
+      return { fileId: 'file-server-2' }
+    })
+    render(<A2UIFormRenderer controller={controller} document={document} upload={upload} />)
+
+    const fileInput = screen.getByLabelText('Files') as HTMLInputElement
+    fireEvent.change(fileInput, { target: { files: [new File(['x'], 'retry.png', { type: 'image/png' })] } })
+    const retry = await screen.findByRole('button', { name: 'Retry retry.png' })
+    expect(controller.getValue('/files')).toEqual([])
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(controller.getValue('/files')).toEqual([
+      { fileId: 'file-server-2', name: 'retry.png', size: 1, mimeType: 'image/png', status: 'uploaded' },
+    ]))
+    expect(upload).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders only the Markdown subset and removes unsafe link protocols without interpreting raw HTML', () => {
+    const document = documentWith(
+      {},
+      [{
+        id: 'guide',
+        type: 'Markdown',
+        props: {
+          ariaLabel: 'Guide',
+          content: '# Heading\n\nA **strong** *emphasis* `code` [safe](https://example.com).\n\n- First\n- Second\n\n[bad](javascript:alert(1)) [data](data:text/html,boom) <img src=x>',
+        },
+        children: [],
+      }],
+    )
+    const controller = createA2UIFormController(document)
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    expect(screen.getByRole('region', { name: 'Guide' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeInTheDocument()
+    expect(screen.getByText('strong', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.getByText('emphasis', { selector: 'em' })).toBeInTheDocument()
+    expect(screen.getByText('code', { selector: 'code' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'safe' })).toHaveAttribute('href', 'https://example.com')
+    expect(screen.queryByRole('link', { name: 'bad' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'data' })).not.toBeInTheDocument()
+    expect(screen.getByText('<img src=x>')).toBeInTheDocument()
+    expect(screen.queryByText('img', { selector: 'img' })).not.toBeInTheDocument()
   })
 })
