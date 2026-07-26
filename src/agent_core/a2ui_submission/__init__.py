@@ -8,12 +8,13 @@ this package never adds a web-framework dependency to the text Agent runtime.
 from .config import A2UISettings
 from .forms import FormSnapshot, InMemoryFormRegistry
 from .repository import SQLiteSubmissionRepository
-from .service import SubmissionService
+from .service import SubmissionPort, SubmissionService
 
 __all__ = [
     "A2UISettings",
     "FormSnapshot",
     "InMemoryFormRegistry",
     "SQLiteSubmissionRepository",
+    "SubmissionPort",
     "SubmissionService",
 ]

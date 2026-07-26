@@ -25,10 +25,16 @@ from agent_core.a2ui_http import (
     AuthorizedResolveContext,
     create_a2ui_app,
 )
-from agent_core.a2ui_submission.forms import InMemoryFormRegistry, build_form_snapshot
+from agent_core.a2ui_submission.forms import (
+    FieldDefinition,
+    FormSnapshot,
+    InMemoryFormRegistry,
+    build_form_snapshot,
+    validate_submission_data,
+)
 from agent_core.a2ui_submission.http import create_submission_router
 from agent_core.a2ui_submission.repository import SQLiteSubmissionRepository
-from agent_core.a2ui_submission.service import SubmissionService
+from agent_core.a2ui_submission.service import ServiceResponse, SubmissionService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +45,11 @@ SUBMIT_PATH = "/api/a2ui/v1/forms/single-field-update/submissions"
 def _single_field_document() -> dict:
     examples = json.loads(EXAMPLES_PATH.read_text(encoding="utf-8"))["examples"]
     return next(example for example in examples if example["formId"] == "single-field-update")
+
+
+def _conditional_document() -> dict:
+    examples = json.loads(EXAMPLES_PATH.read_text(encoding="utf-8"))["examples"]
+    return next(example for example in examples if example["formId"] == "conditional-application")
 
 
 def _payload(
@@ -58,6 +69,26 @@ def _payload(
             "sourceComponentId": "single-field-submit",
         },
         "data": {"profile": {"phone": phone}},
+    }
+
+
+def _conditional_payload(*, idempotency_key: str = "idem-conditional-001") -> dict:
+    return {
+        "schemaVersion": "1.0.0",
+        "requestId": "request-conditional-001",
+        "idempotencyKey": idempotency_key,
+        "formId": "conditional-application",
+        "revision": 3,
+        "action": {
+            "actionId": "submit-linked",
+            "sourceComponentId": "linked-submit",
+        },
+        # The frozen client behavior omits the disabled, hidden company field.
+        "data": {
+            "identity": {"personType": "employee", "workEmail": "person@example.com"},
+            "access": {"startDate": "2026-08-01", "level": "write"},
+            "preferences": {"notify": True},
+        },
     }
 
 
@@ -120,6 +151,32 @@ class Components:
     authorizer: FormPolicy
     document: object
     database_url: str
+
+
+class RecordingSubmissionPort:
+    """A transport-test substitute for ISSUE-16's persistence port."""
+
+    def __init__(self) -> None:
+        self.submissions: list[tuple[AuthenticatedPrincipal, str, object]] = []
+
+    def submit(self, *, principal, form_id_from_path, command) -> ServiceResponse:
+        self.submissions.append((principal, form_id_from_path, command))
+        return ServiceResponse(
+            status_code=200,
+            body={
+                "schemaVersion": "1.0.0",
+                "requestId": command.request_id,
+                "formId": command.form_id,
+                "status": "success",
+                "result": {"submissionId": "submission-port-stub"},
+            },
+        )
+
+    def get_submission(self, *, principal, submission_id):
+        raise AssertionError("GET is outside this submit-port test")
+
+    def audit_read(self, *, principal, response) -> None:
+        raise AssertionError("GET is outside this submit-port test")
 
 
 def _compose_app(
@@ -203,6 +260,138 @@ def test_field_error_uses_shared_validation_envelope_without_write(tmp_path: Pat
     assert parsed.status == "validation_error"
     assert "/profile/phone" in parsed.field_errors
     assert components.repository.count_submissions() == 0
+
+
+def test_field_validation_uses_frozen_default_codes() -> None:
+    principal = AuthenticatedPrincipal(subject_id="user-a", tenant_id="tenant-a")
+    cases = [
+        ("TextInput", "ok", {"type": "required"}, "", "FIELD_REQUIRED"),
+        ("TextInput", "ok", {"type": "minLength", "value": 3}, "x", "STRING_TOO_SHORT"),
+        ("TextInput", "ok", {"type": "maxLength", "value": 2}, "toolong", "STRING_TOO_LONG"),
+        ("TextInput", "ok", {"type": "pattern", "value": "^[0-9]+$"}, "x", "PATTERN_MISMATCH"),
+        ("NumberInput", 1, {"type": "minimum", "value": 1}, 0, "NUMBER_TOO_SMALL"),
+        ("NumberInput", 1, {"type": "maximum", "value": 2}, 3, "NUMBER_TOO_LARGE"),
+        ("NumberInput", 1, {"type": "integer"}, 1.5, "INTEGER_REQUIRED"),
+        ("CheckboxGroup", ["x"], {"type": "minItems", "value": 1}, [], "ARRAY_TOO_SHORT"),
+        ("CheckboxGroup", ["x"], {"type": "maxItems", "value": 1}, ["x", "y"], "ARRAY_TOO_LONG"),
+    ]
+
+    for component_type, initial_value, validator, invalid_value, expected_code in cases:
+        field = FieldDefinition(
+            data_path="/value",
+            component_id="field",
+            component_type=component_type,
+            validations=(validator,),
+            props={},
+            data_source_id=None,
+        )
+        snapshot = FormSnapshot(
+            form_id="validation-fixture",
+            revision=1,
+            initial_values={"value": initial_value},
+            actions={},
+            fields={"/value": field},
+            rules=(),
+            component_states={"field": (True, False)},
+        )
+        result = validate_submission_data(
+            snapshot=snapshot,
+            principal=principal,
+            data={"value": invalid_value},
+            file_reference_verifier=None,
+            remote_option_verifier=None,
+        )
+        assert result.field_errors["/value"][0]["code"] == expected_code
+
+
+def test_hidden_conditional_field_may_be_omitted_from_submit_data(tmp_path: Path) -> None:
+    conditional = validate_form_document(_conditional_document())
+    components = _components(
+        tmp_path,
+        forms=InMemoryFormRegistry.from_documents([conditional]),
+    )
+    path = "/api/a2ui/v1/forms/conditional-application/submissions"
+
+    with TestClient(components.app) as client:
+        response = client.post(path, json=_conditional_payload(), headers=_headers())
+
+    assert response.status_code == 200
+    assert components.repository.count_submissions() == 1
+
+
+def test_unknown_data_path_is_request_error_after_idempotency_lookup(tmp_path: Path) -> None:
+    components = _components(tmp_path)
+    unknown = _payload(idempotency_key="idem-unknown-data")
+    unknown["data"]["profile"]["unexpected"] = "not declared"
+
+    with TestClient(components.app) as client:
+        fresh = client.post(SUBMIT_PATH, json=unknown, headers=_headers())
+        created = client.post(SUBMIT_PATH, json=_payload(idempotency_key="idem-existing"), headers=_headers())
+        existing_key = _payload(idempotency_key="idem-existing")
+        existing_key["data"]["profile"]["unexpected"] = "not declared"
+        conflict = client.post(SUBMIT_PATH, json=existing_key, headers=_headers())
+
+    assert fresh.status_code == 400
+    assert FormSubmitErrorV1.model_validate(fresh.json()).errors[0].code == "REQUEST_INVALID"
+    assert conflict.status_code == 409
+    assert FormSubmitErrorV1.model_validate(conflict.json()).errors[0].code == "IDEMPOTENCY_KEY_CONFLICT"
+    assert created.status_code == 200
+    assert components.repository.count_submissions() == 1
+
+
+def test_unknown_action_is_schema_error_after_fresh_idempotency_lookup(tmp_path: Path) -> None:
+    components = _components(tmp_path)
+    invalid = _payload(idempotency_key="idem-unknown-action")
+    invalid["action"]["actionId"] = "missing-submit-action"
+
+    with TestClient(components.app) as client:
+        response = client.post(SUBMIT_PATH, json=invalid, headers=_headers())
+
+    assert response.status_code == 422
+    assert FormSubmitErrorV1.model_validate(response.json()).errors[0].code == "SCHEMA_INVALID"
+    assert components.repository.count_submissions() == 0
+
+
+def test_submit_openapi_declares_field_and_general_422_envelopes(tmp_path: Path) -> None:
+    components = _components(tmp_path)
+    route_path = "/api/a2ui/v1/forms/{formId}/submissions"
+    schema = components.app.openapi()["paths"][route_path]["post"]["responses"]["422"]
+
+    assert schema["description"] == "Field validation failure or current form/action contract error."
+    refs = {
+        item["$ref"]
+        for item in schema["content"]["application/json"]["schema"]["oneOf"]
+    }
+    assert refs == {
+        "#/components/schemas/FormSubmitValidationErrorV1",
+        "#/components/schemas/FormSubmitErrorV1",
+    }
+
+
+def test_submit_router_consumes_submission_port_without_sqlite(tmp_path: Path) -> None:
+    port = RecordingSubmissionPort()
+    document = validate_form_document(_single_field_document())
+    provider = TokenPrincipalProvider(
+        {"writer": AuthenticatedPrincipal(subject_id="user-a", tenant_id="tenant-a")}
+    )
+    authorizer = FormPolicy()
+    app = _compose_app(
+        service=port,
+        provider=provider,
+        authorizer=authorizer,
+        document=document,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(SUBMIT_PATH, json=_payload(), headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["result"]["submissionId"] == "submission-port-stub"
+    assert len(port.submissions) == 1
+    principal, path_form_id, command = port.submissions[0]
+    assert principal == AuthenticatedPrincipal(subject_id="user-a", tenant_id="tenant-a")
+    assert path_form_id == "single-field-update"
+    assert command.idempotency_key == "idem-001"
 
 
 def test_generic_error_uses_shared_error_envelope(tmp_path: Path) -> None:
