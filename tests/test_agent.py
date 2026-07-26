@@ -3,10 +3,12 @@
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_core import Message, ToolRegistry
+from agent_core import core
 from agent_core.checkpoint import load, save, list_checkpoints
 from agent_core.tools import Tool
 from agent_core.types import AgentState
@@ -82,3 +84,33 @@ class TestCheckpoint:
     def test_load_nonexistent(self):
         with tempfile.TemporaryDirectory() as tmp:
             assert load(checkpoint_dir=tmp) is None
+
+
+def test_run_keeps_returning_legacy_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    choice = SimpleNamespace(
+        finish_reason="stop",
+        message=SimpleNamespace(content="legacy text", tool_calls=None),
+    )
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_: SimpleNamespace(choices=[choice])
+            )
+        )
+    )
+    monkeypatch.setattr(
+        core,
+        "load_provider",
+        lambda _: {"base_url": "https://provider.invalid", "api_key": "key", "model": "model"},
+    )
+    monkeypatch.setattr(core, "OpenAI", lambda **_: fake_client)
+
+    result = core.run(
+        "hello",
+        ToolRegistry(),
+        verbose=False,
+        checkpoint_dir=str(tmp_path),
+    )
+
+    assert result == "legacy text"
+    assert isinstance(result, str)
