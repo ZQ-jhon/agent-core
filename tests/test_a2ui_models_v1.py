@@ -355,6 +355,11 @@ def test_rfc3339_rejects_lenient_timestamps(invalid_ts: str) -> None:
         (r"a|b",),
         (r"(?:foo|bar)",),   # non-capturing group is RE2-safe
         (r"[a-z&&[^aeiou]]",),  # character class intersection is RE2-safe
+        # Character class escaping: escaped ] inside brackets must be RE2-safe.
+        (r"[\\]]",),           # character class containing literal backslash and ]
+        (r"[\\]]+",),         # escaped-] + quantifier — must not trigger possessive detection
+        (r"[a-z\\]]",),        # range + escaped ]
+        (r"[-\\]]",),          # leading hyphen + escaped ]
     ],
 )
 def test_pattern_accepts_re2_compatible(valid_pattern: str) -> None:
@@ -371,22 +376,67 @@ def test_pattern_accepts_re2_compatible(valid_pattern: str) -> None:
         ("(?<!prefix)",),       # negative lookbehind
         ("(?>atomic)",),        # atomic group
         (r"(a)\1",),            # backreference
-        (r"(?P<name>a)(?P=name)",),  # named backreference
+        (r"(?P<name>a)",),      # named capture definition (standalone)
+        (r"(?P<name>a)(?P=name)",),  # named capture + backreference
         (r"\k<name>",),         # named backreference (\k<)
+        (r"\k'name'",),         # named backreference (\k')
         ("(?R)",),              # recursion
         ("(?&name)",),          # subroutine call
         ("(?()|)",),            # conditional
         ("a*+",),               # possessive quantifier *+
         ("a++",),               # possessive quantifier ++
         ("a?+",),               # possessive quantifier ?+
-        ("a{1,2}+",),           # possessive quantifier {}+ 
+        ("a{1,2}+",),           # possessive quantifier {}+
         ("a{3}+",),             # possessive quantifier exact {}+
+        # Character class escaping dangers: possessive-like patterns inside brackets.
+        ("[a-z]++",),           # possessive quantifier after character class (outside)
     ],
 )
 def test_pattern_rejects_non_re2(invalid_pattern: str) -> None:
     """PatternValidator rejects patterns using RE2-incompatible features."""
     with pytest.raises(ValidationError):
         PatternValidator.model_validate({"type": "pattern", "value": invalid_pattern})
+
+
+class TestRe2CharClassEscaping:
+    """Character class escaping with \\] must not cause false-positive
+    possessive-quantifier detection or spurious class closure."""
+
+    @pytest.mark.parametrize(
+        ("pattern", "should_accept"),
+        [
+            # Escaped ] inside character class (RE2-safe)
+            (r"[\\]]", True),
+            (r"[a-z\\]]", True),
+            (r"[-\\]]", True),
+            (r"[\\]a-z]", True),
+            (r"[\\]]+", True),
+            (r"[\\]]*", True),
+            (r"[\\]]?", True),
+            (r"[\\]]{1,3}", True),
+            # Normal character classes (RE2-safe)
+            (r"[a-z]", True),
+            (r"[0-9]+", True),
+            (r"[^aeiou]", True),
+            # Possessive quantifier after char class (non-RE2)
+            (r"[a-z]++", False),
+            (r"[a-z]*+", False),
+            (r"[a-z]?+", False),
+            (r"[a-z]{2}+", False),
+        ],
+    )
+    def test_char_class_escaping_boundaries(
+        self, pattern: str, should_accept: bool
+    ) -> None:
+        if should_accept:
+            PatternValidator.model_validate(
+                {"type": "pattern", "value": pattern}
+            )
+        else:
+            with pytest.raises(ValidationError):
+                PatternValidator.model_validate(
+                    {"type": "pattern", "value": pattern}
+                )
 
 
 def test_datepicker_in_validate_form_document_rejects_basic_date() -> None:

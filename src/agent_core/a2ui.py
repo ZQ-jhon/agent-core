@@ -283,6 +283,12 @@ def _validate_re2_pattern(value: str) -> str:
 
     Does NOT execute the pattern and does NOT fall back to Python ``re``
     compilation as a proxy for RE2 acceptance.
+
+    The scanner performs a single character-level pass.  It tracks whether the
+    cursor is inside a ``[...]`` character class so that possessive-quantifier
+    detection (``*+``, ``++``, ``?+``, ``{…}+``) is disabled inside brackets.
+    Escaped ``\\]`` is consumed by the escape branch before the bare-``]``
+    check, so it never spuriously closes a class.
     """
     i = 0
     n = len(value)
@@ -297,8 +303,8 @@ def _validate_re2_pattern(value: str) -> str:
                 # Backreference: \\1 .. \\9
                 if nxt.isdigit() and nxt != "0":
                     raise ValueError("pattern uses a feature outside the RE2 subset")
-                # Named backreference: \\k<name>
-                if nxt == "k" and i + 2 < n and value[i + 2] == "<":
+                # Named backreference: \\k<name>  or  \\k'name'
+                if nxt == "k" and i + 2 < n and value[i + 2] in ("<", "'"):
                     raise ValueError("pattern uses a feature outside the RE2 subset")
             i += 2
             continue
@@ -317,15 +323,20 @@ def _validate_re2_pattern(value: str) -> str:
             if value[i : i + 3] == "(?>":
                 raise ValueError("pattern uses a feature outside the RE2 subset")
 
-            # Lookahead / lookbehind / conditional / recursion
+            # Lookahead / lookbehind / conditional / recursion /
+            # named-capture-definition.
             if value[i : i + 2] == "(?" and i + 2 < n:
                 after = value[i + 2]
                 if after in "=!<":
                     raise ValueError("pattern uses a feature outside the RE2 subset")
-                # Named backreference (?P= / conditional (?(
-                if value[i : i + 3] == "(?(":
+                # Named capture definition: (?P<name>  — must reject explicitly.
+                if i + 3 < n and value[i : i + 4] == "(?P<":
                     raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named backreference: (?P=name)
                 if i + 3 < n and value[i : i + 4] == "(?P=":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Conditional: (?(
+                if value[i : i + 3] == "(?(":
                     raise ValueError("pattern uses a feature outside the RE2 subset")
                 if after in "R&":
                     raise ValueError("pattern uses a feature outside the RE2 subset")
