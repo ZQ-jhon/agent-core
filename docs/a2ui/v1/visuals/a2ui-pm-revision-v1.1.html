@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>A2UI PM revision v1.1</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5b6679;
+      --line: #d7dee8;
+      --canvas: #eef2f8;
+      --surface: #ffffff;
+      --primary: #3155d9;
+      --primary-dark: #2648c2;
+      --primary-soft: #edf2ff;
+      --green: #067647;
+      --green-soft: #ecfdf3;
+      --amber: #b54708;
+      --amber-soft: #fff8e6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    .sheet {
+      width: 1600px;
+      min-height: 1800px;
+      margin: 0 auto;
+      padding: 72px 80px 84px;
+      background:
+        radial-gradient(circle at 92% 2%, rgba(49,85,217,.10), transparent 24%),
+        var(--canvas);
+    }
+    .masthead {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      margin-bottom: 38px;
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--primary);
+      font-size: 16px;
+      font-weight: 750;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: 46px;
+      line-height: 1.12;
+      letter-spacing: -.035em;
+    }
+    .version {
+      padding: 10px 16px;
+      border: 1px solid #becaf7;
+      border-radius: 999px;
+      background: rgba(255,255,255,.72);
+      color: var(--primary);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 30px;
+    }
+    .summary > div {
+      min-height: 78px;
+      padding: 17px 20px;
+      border: 1px solid #cbd5e4;
+      border-radius: 14px;
+      background: rgba(255,255,255,.72);
+    }
+    .summary b { display: block; margin-bottom: 5px; font-size: 15px; }
+    .summary span { color: var(--muted); font-size: 14px; line-height: 1.45; }
+    .context-demo {
+      margin-bottom: 30px;
+      padding: 28px 32px 30px;
+      border-radius: 20px;
+      background: var(--surface);
+      box-shadow: 0 14px 36px rgba(23,32,51,.08);
+    }
+    .section-label {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      margin-bottom: 18px;
+      font-size: 18px;
+      font-weight: 750;
+    }
+    .badge {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .context-rail {
+      display: grid;
+      grid-template-columns: 1fr 1.25fr 1.45fr 1.35fr;
+      gap: 0;
+      overflow: hidden;
+      border: 1px solid #cbd5f7;
+      border-left: 6px solid var(--primary);
+      border-radius: 14px;
+      background: var(--primary-soft);
+    }
+    .context-item {
+      min-height: 98px;
+      padding: 19px 22px;
+      border-right: 1px solid #d6def9;
+    }
+    .context-item:last-child { border-right: 0; }
+    .context-item small {
+      display: block;
+      margin-bottom: 8px;
+      color: #63709c;
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: .06em;
+    }
+    .context-item strong {
+      font-size: 16px;
+      line-height: 1.45;
+    }
+    .context-foot {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 15px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .cancel-link { color: var(--primary); font-weight: 700; }
+    .grid {
+      display: grid;
+      grid-template-columns: .94fr 1.06fr;
+      gap: 30px;
+      align-items: start;
+    }
+    .panel {
+      overflow: hidden;
+      border: 1px solid #d9e0eb;
+      border-radius: 20px;
+      background: var(--surface);
+      box-shadow: 0 14px 36px rgba(23,32,51,.08);
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+    .panel-head h2 { margin: 0; font-size: 19px; }
+    .status {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .frame {
+      padding: 24px;
+      background: #f7f9fc;
+    }
+    .task-card {
+      overflow: hidden;
+      border: 1px solid #e1e6ee;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(23,32,51,.07);
+    }
+    .mini-context {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px 22px;
+      padding: 18px 20px;
+      border-bottom: 1px solid #d8e1fc;
+      border-left: 4px solid var(--primary);
+      background: var(--primary-soft);
+    }
+    .mini-context span {
+      display: block;
+      margin-bottom: 4px;
+      color: #66729a;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .mini-context strong { font-size: 13px; line-height: 1.35; }
+    .form {
+      padding: 26px 26px 28px;
+    }
+    .form h3 {
+      margin: 0 0 7px;
+      font-size: 25px;
+      line-height: 1.24;
+      letter-spacing: -.02em;
+    }
+    .desc {
+      margin: 0 0 26px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .field { margin: 0 0 20px; }
+    .field label {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 14px;
+      font-weight: 720;
+    }
+    .required { color: #b42318; font-size: 12px; }
+    .input, .select {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      min-height: 46px;
+      padding: 0 14px;
+      border: 1px solid #7c899d;
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .help {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 18px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+    .text-action {
+      color: var(--primary);
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .button {
+      min-height: 44px;
+      padding: 0 20px;
+      border-radius: 10px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 750;
+    }
+    .proof {
+      display: grid;
+      gap: 9px;
+      margin-top: 16px;
+      padding: 15px 17px;
+      border-radius: 12px;
+      background: var(--green-soft);
+      color: #085c3b;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .proof b::before { content: "✓"; margin-right: 8px; }
+    .state-stack {
+      display: grid;
+      gap: 18px;
+    }
+    .state {
+      padding: 20px;
+      border: 1px solid #dfe5ee;
+      border-radius: 15px;
+      background: #fff;
+    }
+    .state-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .state-title strong { font-size: 15px; }
+    .pill {
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: #f1f4f8;
+      color: #687386;
+      font-size: 11px;
+      font-weight: 750;
+    }
+    .radio-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 9px;
+    }
+    .radio {
+      flex: 1;
+      padding: 11px 13px;
+      border: 1px solid #a9b4c5;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+    .radio.on {
+      border-color: var(--primary);
+      box-shadow: inset 0 0 0 1px var(--primary);
+      background: var(--primary-soft);
+      color: var(--primary-dark);
+      font-weight: 750;
+    }
+    .dynamic {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px dashed #9eb0ef;
+      border-radius: 12px;
+      background: #f8faff;
+    }
+    .dynamic-note {
+      grid-column: 1 / -1;
+      color: #53699c;
+      font-size: 12px;
+    }
+    .ghost {
+      display: grid;
+      min-height: 112px;
+      place-items: center;
+      margin-top: 18px;
+      border: 1px dashed #c8d0dc;
+      border-radius: 12px;
+      background: #f8fafc;
+      color: #687386;
+      text-align: center;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .behavior {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .behavior div {
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--amber-soft);
+      color: #7a3b08;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+    }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 28px;
+      padding-top: 20px;
+      border-top: 1px solid #cbd4e1;
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <main class="sheet">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">A2UI · PM return revision</p>
+        <h1>聚焦任务卡 · 修订设计基线</h1>
+      </div>
+      <div class="version">v1.1 · 可复审</div>
+    </header>
+
+    <section class="summary" aria-label="修订摘要">
+      <div><b>01 上下文闭环</b><span>对象、任务、数据用途、预计结果同时出现。</span></div>
+      <div><b>02 最小字段集</b><span>单字段修改只有一个可编辑字段，不带无关资料。</span></div>
+      <div><b>03 条件与取消</b><span>隐藏字段不校验、不提交；取消返回对话且不写数据。</span></div>
+    </section>
+
+    <section class="context-demo">
+      <div class="section-label"><span class="badge">P0</span>任务锚点带 · 四项信息一次确认</div>
+      <div class="context-rail">
+        <div class="context-item"><small>当前任务</small><strong>修改联系电话</strong></div>
+        <div class="context-item"><small>目标对象</small><strong>王敏 · 客户编号 1024</strong></div>
+        <div class="context-item"><small>数据用途</small><strong>用于订单配送异常时联系</strong></div>
+        <div class="context-item"><small>预计结果</small><strong>保存后立即更新客户档案</strong></div>
+      </div>
+      <div class="context-foot">
+        <span>缺少任一项：停止进入可提交态，不伪造宿主信息。</span>
+        <span class="cancel-link">取消并返回对话 →</span>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <header class="panel-head">
+          <h2>单字段修改</h2>
+          <span class="status">最小字段集通过</span>
+        </header>
+        <div class="frame">
+          <div class="task-card">
+            <div class="mini-context">
+              <div><span>任务</span><strong>修改联系电话</strong></div>
+              <div><span>对象</span><strong>王敏 · 1024</strong></div>
+              <div><span>数据用途</span><strong>配送异常联系</strong></div>
+              <div><span>预计结果</span><strong>立即更新档案</strong></div>
+            </div>
+            <div class="form">
+              <h3>修改联系电话</h3>
+              <p class="desc">请确认新号码。保存后将用于配送异常联系。</p>
+              <div class="field">
+                <label>联系电话 <span class="required">必填</span></label>
+                <div class="input">138 0013 8000</div>
+                <div class="help">仅填写本次需要修改的号码。</div>
+              </div>
+              <div class="actions">
+                <span class="text-action">取消并返回对话</span>
+                <span class="button">保存联系电话</span>
+              </div>
+            </div>
+          </div>
+          <div class="proof">
+            <b>仅 1 个可编辑字段</b>
+            <b>姓名、地址、备注等无关资料不出现</b>
+            <b>取消不映射 reset，不触发业务写入</b>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <header class="panel-head">
+          <h2>必要约束申请 / 预约</h2>
+          <span class="status">条件语义通过</span>
+        </header>
+        <div class="frame">
+          <div class="task-card">
+            <div class="mini-context">
+              <div><span>任务</span><strong>提交电话回访预约</strong></div>
+              <div><span>对象</span><strong>王敏 · 当前订单</strong></div>
+              <div><span>数据用途</span><strong>安排服务人员回访</strong></div>
+              <div><span>预计结果</span><strong>生成一次回访预约</strong></div>
+            </div>
+            <div class="form">
+              <h3>安排电话回访</h3>
+              <p class="desc">仅在需要回访时补充预约日期与时段。</p>
+              <div class="state-stack">
+                <div class="state">
+                  <div class="state-title"><strong>关键帧 A · 条件关闭</strong><span class="pill">默认</span></div>
+                  <div class="field">
+                    <label>需要电话回访 <span class="required">必填</span></label>
+                    <div class="radio-row"><div class="radio on">否</div><div class="radio">是</div></div>
+                  </div>
+                  <div class="ghost">预约日期 / 时段不渲染<br>不占位 · 不可聚焦 · 不校验 · 不提交</div>
+                </div>
+                <div class="state">
+                  <div class="state-title"><strong>关键帧 B · 条件开启</strong><span class="pill">联动后</span></div>
+                  <div class="field">
+                    <label>需要电话回访 <span class="required">必填</span></label>
+                    <div class="radio-row"><div class="radio">否</div><div class="radio on">是</div></div>
+                  </div>
+                  <div class="dynamic">
+                    <div><label>预约日期</label><div class="select">2026-07-28</div></div>
+                    <div><label>回访时段</label><div class="select">14:00–16:00</div></div>
+                    <div class="dynamic-note">因选择“是”而需要填写；出现后不抢夺当前焦点。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="behavior">
+                <div>关闭后停止校验</div>
+                <div>关闭后移出载荷</div>
+                <div>取消不写业务数据</div>
+              </div>
+              <div class="actions">
+                <span class="text-action">取消并返回对话</span>
+                <span class="button">提交预约</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <footer class="footer">
+      <span>A2UI Form Profile 1.0.0 · Visual interaction baseline</span>
+      <span>Revision board: a2ui-pm-revision-v1.1</span>
+    </footer>
+  </main>
+</body>
+</html>

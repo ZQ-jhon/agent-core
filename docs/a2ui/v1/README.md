@@ -7,6 +7,7 @@
 3. [`validation-and-actions-v1.md`](validation-and-actions-v1.md)：校验、联动、action、数据源和降级；
 4. [`form-examples-v1.json`](form-examples-v1.json)：单字段修改、条件化资料补全、含远程选项的必要约束申请三个可渲染标准示例；
 5. [`backend-contract-review-v1.md`](backend-contract-review-v1.md)：后端对齐与冻结记录。
+6. [`frontend-visual-interaction-spec-v1.md`](frontend-visual-interaction-spec-v1.md)：前端演示页视觉、交互、组件状态与 QA 验收基线。
 
 机器可读文件：
 
