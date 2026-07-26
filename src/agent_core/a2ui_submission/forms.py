@@ -262,7 +262,7 @@ def _json_equal(left: Any, right: Any) -> bool:
 def validate_submission_data(
     *,
     snapshot: FormSnapshot,
-    principal: Principal,
+    principal: SubmissionPrincipal,
     data: dict[str, Any],
     file_reference_verifier: FileReferenceVerifier | None,
     remote_option_verifier: RemoteOptionVerifier | None,
@@ -572,7 +572,7 @@ def _validate_static_options(
 
 
 def _validate_file_references(
-    principal: Principal,
+    principal: SubmissionPrincipal,
     field: FieldDefinition,
     values: list[Any],
     verifier: FileReferenceVerifier | None,

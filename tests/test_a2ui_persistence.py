@@ -127,8 +127,10 @@ class FormPolicy:
     """A test host implementation of PR #8's FormAuthorizer port."""
 
     denied_subjects: set[str] = field(default_factory=set)
+    calls: int = 0
 
     def __call__(self, principal, form_key, _untrusted_context):
+        self.calls += 1
         if principal.subject_id in self.denied_subjects:
             return None
         return AuthorizedResolveContext({"formKey": form_key})
@@ -248,6 +250,7 @@ def test_real_combined_tree_imports_resolves_and_persists(tmp_path: Path) -> Non
     assert resolved.status_code == 200
     assert created.status_code == 200
     assert read.status_code == 200
+    assert read.headers["cache-control"] == "no-store"
     assert read.json()["data"] == {"profile": {"phone": "13800138000"}}
 
 
@@ -395,6 +398,31 @@ def test_submit_router_consumes_submission_port_without_sqlite(tmp_path: Path) -
     assert command.idempotency_key == "idem-001"
 
 
+def test_unauthenticated_submit_uses_path_form_id_without_parsing_body() -> None:
+    service = RecordingSubmissionPort()
+    document = validate_form_document(_single_field_document())
+    authorizer = FormPolicy()
+    app = _compose_app(
+        service=service,
+        provider=TokenPrincipalProvider({}),
+        authorizer=authorizer,
+        document=document,
+    )
+    payload = _payload(request_id="body-request-id")
+    payload["formId"] = "conflicting-body-form-id"
+
+    with TestClient(app) as client:
+        response = client.post(SUBMIT_PATH, json=payload)
+
+    assert response.status_code == 401
+    body = response.json()
+    assert body["requestId"] == "unknown"
+    assert body["formId"] == "single-field-update"
+    assert body["errors"][0]["code"] == "UNAUTHENTICATED"
+    assert authorizer.calls == 0
+    assert service.submissions == []
+
+
 def test_generic_error_uses_shared_error_envelope(tmp_path: Path) -> None:
     class ExplodingRegistry:
         def get(self, _form_id: str):
@@ -511,6 +539,40 @@ def test_owner_isolation_and_authorized_read_gate(tmp_path: Path) -> None:
     assert revoked.headers["cache-control"] == "no-store"
 
 
+def test_audit_read_failure_fails_closed_with_safe_json_error_and_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    components = _components(tmp_path)
+    with TestClient(components.app) as client:
+        created = client.post(SUBMIT_PATH, json=_payload(), headers=_headers())
+    submission_id = created.json()["result"]["submissionId"]
+    secret = "audit-port-secret-13800138000"
+
+    def fail_audit_read(*, principal, response) -> None:
+        del principal, response
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(components.service, "audit_read", fail_audit_read)
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="agent_core.a2ui_submission.http"):
+        with TestClient(components.app) as client:
+            read = client.get(f"/api/a2ui/v1/submissions/{submission_id}", headers=_headers())
+
+    assert read.status_code == 500
+    assert read.headers["content-type"].startswith("application/json")
+    error = FormSubmitErrorV1.model_validate(read.json())
+    assert error.status == "error"
+    assert error.request_id == "unknown"
+    assert error.form_id == "unknown"
+    assert error.errors[0].code == "INTERNAL_ERROR"
+    assert error.errors[0].retryable is True
+    assert secret not in read.text
+    assert secret not in caplog.text
+    assert "A2UI submission read audit failed" in caplog.text
+
+
 def test_concurrent_same_key_creates_one_submission(tmp_path: Path) -> None:
     components = _components(tmp_path)
     command = validate_form_submit_request(_payload())
@@ -562,3 +624,23 @@ def test_registry_accepts_only_the_shared_profile_model(tmp_path: Path) -> None:
 
     with pytest.raises(ProtocolValidationError):
         InMemoryFormRegistry.from_documents([malformed])
+
+
+def test_public_type_annotations_resolve_without_name_error() -> None:
+    """``typing.get_type_hints`` must resolve all module-level public
+    callables without raising ``NameError``, as required by port contracts."""
+    import typing
+
+    import agent_core.a2ui_submission.forms as mod
+
+    for name in ("validate_submission_data", "_validate_file_references"):
+        target = getattr(mod, name)
+        # get_type_hints raises NameError if any annotation references
+        # an undefined name (issue: undefined ``Principal``).
+        hints = typing.get_type_hints(target)
+        assert "principal" in hints
+
+    # ``FileReferenceVerifier`` / ``RemoteOptionVerifier`` are ``Callable``
+    # type aliases — ``get_type_hints`` does not apply to them, but their
+    # annotations were verified indirectly via ``validate_submission_data``
+    # and ``_validate_file_references`` whose signatures consume them.
