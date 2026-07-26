@@ -731,6 +731,92 @@ describe('A2UI form state controller', () => {
     expect(submissions).toBe(0)
   })
 
+  it('blocks a forged nested setValue rule before it corrupts a bound Upload value', async () => {
+    const uploadedFile = { fileId: 'file-1', name: 'resume.pdf', size: 1200, mimeType: 'application/pdf', status: 'uploaded' }
+    const document = documentWith(
+      { trigger: true, files: [uploadedFile] },
+      [uploadInput('files', '/files'), submitButton()],
+      { actions: [uploadAction(), submitAction()] },
+    )
+    const forged = structuredClone(document)
+    Object.defineProperty(forged, 'rules', {
+      value: [
+        {
+          id: 'set-invalid-upload-status',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [{ type: 'setValue', targetDataPath: '/files/0/status', value: 'pending' }],
+        },
+      ],
+    })
+    let submissions = 0
+    const controller = createA2UIFormController(forged, {
+      submit: async () => {
+        submissions += 1
+        return { status: 'success', result: { submissionId: 'unexpected' } }
+      },
+    })
+
+    expect(controller.getValue('/files')).toEqual([uploadedFile])
+    expect(controller.getSnapshot().canSubmit).toBe(false)
+    expect(controller.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DATA_BINDING_INVALID', path: '/files/0/status', componentId: 'files' }),
+    ]))
+    expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({
+      status: 'blocked',
+      reason: 'configuration_invalid',
+    })
+    expect(submissions).toBe(0)
+  })
+
+  it('blocks a forged nested setValue rule before it corrupts a bound CheckboxGroup value', async () => {
+    const document = documentWith(
+      { trigger: true, choices: ['one'] },
+      [
+        {
+          id: 'choices',
+          type: 'CheckboxGroup',
+          props: { label: 'Choices', options: [{ label: 'One', value: 'one' }] },
+          children: [],
+          dataPath: '/choices',
+        },
+        submitButton(),
+      ],
+      { actions: [submitAction()] },
+    )
+    const forged = structuredClone(document)
+    Object.defineProperty(forged, 'rules', {
+      value: [
+        {
+          id: 'set-invalid-checkbox-choice',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [{ type: 'setValue', targetDataPath: '/choices/0', value: 'not-an-option' }],
+        },
+      ],
+    })
+    let submissions = 0
+    const controller = createA2UIFormController(forged, {
+      submit: async () => {
+        submissions += 1
+        return { status: 'success', result: { submissionId: 'unexpected' } }
+      },
+    })
+
+    expect(controller.getValue('/choices')).toEqual(['one'])
+    expect(controller.getSnapshot().canSubmit).toBe(false)
+    expect(controller.getSnapshot().diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DATA_BINDING_INVALID', path: '/choices/0', componentId: 'choices' }),
+    ]))
+    expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({
+      status: 'blocked',
+      reason: 'configuration_invalid',
+    })
+    expect(submissions).toBe(0)
+  })
+
   it('blocks malformed Upload values in a forged normalized document', async () => {
     const document = documentWith(
       { files: [] },

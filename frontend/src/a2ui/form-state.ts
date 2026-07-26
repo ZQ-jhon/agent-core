@@ -1,5 +1,6 @@
 import {
   cloneJsonValue,
+  dataPathsOverlap,
   equalJsonValue,
   getDataPathValue,
   removeDataPathValue,
@@ -343,18 +344,6 @@ export function createA2UIFormController(
       if (!isInteractive) {
         return false
       }
-      const incompatibleComponentId = findIncompatibleBoundComponent(dataPath, value)
-      if (incompatibleComponentId !== undefined) {
-        reportRuntimeDiagnostic(
-          'DATA_BINDING_INVALID',
-          'A value write is incompatible with the bound component type and was ignored.',
-          dataPath,
-          incompatibleComponentId,
-        )
-        refreshSnapshot()
-        notify()
-        return false
-      }
       const current = getDataPathValue(values, dataPath)
       const updated = setDataPathValue(values, dataPath, value)
       if (!updated.ok) {
@@ -362,6 +351,18 @@ export function createA2UIFormController(
           'DATA_BINDING_INVALID',
           'A value write targeted an unavailable dataPath and was ignored.',
           dataPath,
+        )
+        refreshSnapshot()
+        notify()
+        return false
+      }
+      const incompatibleComponentId = findIncompatibleBoundComponent(dataPath, updated.value)
+      if (incompatibleComponentId !== undefined) {
+        reportRuntimeDiagnostic(
+          'DATA_BINDING_INVALID',
+          'A value write is incompatible with the bound component type and was ignored.',
+          dataPath,
+          incompatibleComponentId,
         )
         refreshSnapshot()
         notify()
@@ -783,7 +784,13 @@ export function createA2UIFormController(
           continue
         }
         if (effect.type === 'setValue') {
-          const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, effect.value)
+          const before = getDataPathValue(values, effect.targetDataPath)
+          const updated = setDataPathValue(values, effect.targetDataPath, effect.value)
+          if (!updated.ok) {
+            reportConfigurationProblem('RULE_INVALID', 'A rule setValue target is unavailable at runtime.', effect.targetDataPath)
+            break
+          }
+          const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, updated.value)
           if (incompatibleComponentId !== undefined) {
             reportConfigurationProblem(
               'DATA_BINDING_INVALID',
@@ -791,12 +798,6 @@ export function createA2UIFormController(
               effect.targetDataPath,
               incompatibleComponentId,
             )
-            break
-          }
-          const before = getDataPathValue(values, effect.targetDataPath)
-          const updated = setDataPathValue(values, effect.targetDataPath, effect.value)
-          if (!updated.ok) {
-            reportConfigurationProblem('RULE_INVALID', 'A rule setValue target is unavailable at runtime.', effect.targetDataPath)
             break
           }
           if (before.found && !equalJsonValue(before.value, effect.value)) {
@@ -825,11 +826,12 @@ export function createA2UIFormController(
     const effects = condition.value ? rule.then : (rule.else ?? [])
     for (const effect of effects) {
       if (effect.type === 'setValue') {
-        if (!getDataPathValue(batchValues, effect.targetDataPath).found) {
+        const updated = setDataPathValue(batchValues, effect.targetDataPath, effect.value)
+        if (!updated.ok) {
           reportConfigurationProblem('RULE_INVALID', 'A rule target dataPath is unavailable.', effect.targetDataPath)
           return undefined
         }
-        const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, effect.value)
+        const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, updated.value)
         if (incompatibleComponentId !== undefined) {
           reportConfigurationProblem(
             'DATA_BINDING_INVALID',
@@ -942,17 +944,19 @@ export function createA2UIFormController(
       }
       for (const effect of [...rule.then, ...(rule.else ?? [])]) {
         if (effect.type === 'setValue') {
-          if (!getDataPathValue(values, effect.targetDataPath).found) {
+          const updated = setDataPathValue(values, effect.targetDataPath, effect.value)
+          if (!updated.ok) {
             reportConfigurationProblem('RULE_INVALID', 'A rule target dataPath is unavailable.', effect.targetDataPath)
-          }
-          const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, effect.value)
-          if (incompatibleComponentId !== undefined) {
-            reportConfigurationProblem(
-              'DATA_BINDING_INVALID',
-              'A rule setValue value is incompatible with the bound component type.',
-              effect.targetDataPath,
-              incompatibleComponentId,
-            )
+          } else {
+            const incompatibleComponentId = findIncompatibleBoundComponent(effect.targetDataPath, updated.value)
+            if (incompatibleComponentId !== undefined) {
+              reportConfigurationProblem(
+                'DATA_BINDING_INVALID',
+                'A rule setValue value is incompatible with the bound component type.',
+                effect.targetDataPath,
+                incompatibleComponentId,
+              )
+            }
           }
           const edges = graph.get(rule.sourceDataPath) ?? new Set<DataPath>()
           edges.add(effect.targetDataPath)
@@ -967,11 +971,20 @@ export function createA2UIFormController(
     }
   }
 
-  function findIncompatibleBoundComponent(dataPath: DataPath, value: JsonValue): StableId | undefined {
-    for (const componentId of fieldComponentIds.get(dataPath) ?? []) {
-      const node = nodesById.get(componentId)?.node
-      if (node !== undefined && !isCompatibleBoundValue(node, value)) {
-        return componentId
+  function findIncompatibleBoundComponent(
+    targetDataPath: DataPath,
+    candidateValues: Readonly<Record<string, JsonValue>>,
+  ): StableId | undefined {
+    for (const [boundDataPath, componentIds] of fieldComponentIds) {
+      if (!dataPathsOverlap(boundDataPath, targetDataPath)) {
+        continue
+      }
+      const candidateValue = getDataPathValue(candidateValues, boundDataPath)
+      for (const componentId of componentIds) {
+        const node = nodesById.get(componentId)?.node
+        if (node !== undefined && (!candidateValue.found || !isCompatibleBoundValue(node, candidateValue.value))) {
+          return componentId
+        }
       }
     }
     return undefined

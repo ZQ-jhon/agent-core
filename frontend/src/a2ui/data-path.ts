@@ -49,6 +49,22 @@ export function decodeDataPath(dataPath: DataPath): readonly string[] | undefine
   return segments
 }
 
+/**
+ * Returns whether two accepted RFC 6901 pointers address the same value or
+ * overlapping ancestor/descendant values. Segments are compared after decoding
+ * so escaped slashes and tildes cannot change the pointer hierarchy.
+ */
+export function dataPathsOverlap(left: DataPath, right: DataPath): boolean {
+  const leftSegments = decodeDataPath(left)
+  const rightSegments = decodeDataPath(right)
+  if (leftSegments === undefined || rightSegments === undefined) {
+    return false
+  }
+
+  const sharedLength = Math.min(leftSegments.length, rightSegments.length)
+  return leftSegments.slice(0, sharedLength).every((segment, index) => segment === rightSegments[index])
+}
+
 export function getDataPathValue(root: JsonValue, dataPath: DataPath): DataPathReadResult {
   const segments = decodeDataPath(dataPath)
   if (segments === undefined) {

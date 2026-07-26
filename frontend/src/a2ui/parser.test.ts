@@ -278,6 +278,77 @@ describe('A2UI Form Profile v1 parser', () => {
     }
   })
 
+  it('rejects setValue writes through child paths that invalidate bound Upload and CheckboxGroup values', () => {
+    const result = parseA2UIFormDocument({
+      schemaVersion: '1.0.0',
+      requestId: 'request-nested-bound-values',
+      formId: 'form-nested-bound-values',
+      revision: 1,
+      root: {
+        id: 'form-root',
+        type: 'Form',
+        props: {},
+        children: [
+          {
+            id: 'files',
+            type: 'Upload',
+            props: { label: 'Files' },
+            children: [],
+            dataPath: '/files',
+            action: { actionId: 'upload' },
+          },
+          {
+            id: 'choices',
+            type: 'CheckboxGroup',
+            props: { label: 'Choices', options: [{ label: 'One', value: 'one' }] },
+            children: [],
+            dataPath: '/choices',
+          },
+        ],
+      },
+      data: {
+        initialValues: {
+          trigger: true,
+          files: [{ fileId: 'file-1', name: 'resume.pdf', size: 1200, mimeType: 'application/pdf', status: 'uploaded' }],
+          choices: ['one'],
+        },
+      },
+      actions: [{ id: 'upload', type: 'upload', endpointKey: 'forms.upload', method: 'POST' }],
+      rules: [
+        {
+          id: 'set-invalid-upload-status',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [{ type: 'setValue', targetDataPath: '/files/0/status', value: 'pending' }],
+        },
+        {
+          id: 'set-invalid-checkbox-choice',
+          event: 'change',
+          sourceDataPath: '/trigger',
+          when: { op: 'exists', path: '/trigger' },
+          then: [{ type: 'setValue', targetDataPath: '/choices/0', value: 'not-an-option' }],
+        },
+      ],
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'DATA_BINDING_INVALID',
+          path: '/rules/set-invalid-upload-status/then/0/value',
+          componentId: 'files',
+        }),
+        expect.objectContaining({
+          code: 'DATA_BINDING_INVALID',
+          path: '/rules/set-invalid-checkbox-choice/then/0/value',
+          componentId: 'choices',
+        }),
+      ]))
+    }
+  })
+
   it('rejects unsafe regex syntax before a later field validator can trigger catastrophic backtracking', () => {
     const schema = {
       schemaVersion: '1.0.0',

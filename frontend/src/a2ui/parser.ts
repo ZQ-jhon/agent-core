@@ -1,6 +1,6 @@
 import { A2UI_FORM_SCHEMA_VERSION } from './types.ts'
 import { isCompatibleBoundValue } from './bound-value.ts'
-import { cloneJsonValue, getDataPathValue } from './data-path.ts'
+import { cloneJsonValue, dataPathsOverlap, getDataPathValue, setDataPathValue } from './data-path.ts'
 import type { ParseResult, SchemaDiagnostic, SchemaErrorCode } from './errors.ts'
 import type {
   A2UIFormDocumentV1,
@@ -1155,15 +1155,25 @@ function validateDocumentSemantics(
         }
         if ('targetDataPath' in effect) {
           assertExistingDataPath(context, initialValues, effect.targetDataPath, `${effectPath}/targetDataPath`)
-          for (const node of boundNodesByDataPath.get(effect.targetDataPath) ?? []) {
-            if (!isCompatibleBoundValue(node, effect.value)) {
-              addError(
-                context,
-                'DATA_BINDING_INVALID',
-                'A rule setValue value is incompatible with the bound component type.',
-                `${effectPath}/value`,
-                node.id,
-              )
+          const candidate = setDataPathValue(initialValues, effect.targetDataPath, effect.value)
+          if (!candidate.ok) {
+            continue
+          }
+          for (const [boundDataPath, boundNodes] of boundNodesByDataPath) {
+            if (!dataPathsOverlap(boundDataPath, effect.targetDataPath)) {
+              continue
+            }
+            const candidateValue = getDataPathValue(candidate.value, boundDataPath)
+            for (const node of boundNodes) {
+              if (!candidateValue.found || !isCompatibleBoundValue(node, candidateValue.value)) {
+                addError(
+                  context,
+                  'DATA_BINDING_INVALID',
+                  'A rule setValue value is incompatible with the bound component type.',
+                  `${effectPath}/value`,
+                  node.id,
+                )
+              }
             }
           }
         }
