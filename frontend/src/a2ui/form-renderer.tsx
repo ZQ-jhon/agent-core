@@ -246,8 +246,7 @@ function FormComponent({ node }: { readonly node: FormNode }) {
       event.defaultPrevented ||
       node.props.submitOnEnter !== true ||
       submitSources.length !== 1 ||
-      event.target instanceof HTMLTextAreaElement ||
-      event.target instanceof HTMLButtonElement
+      !isEditableSingleLineTextInput(event.target)
     ) {
       return
     }
@@ -464,16 +463,32 @@ function TextInputComponent({ node }: { readonly node: TextInputNode }) {
 function TextAreaComponent({ node }: { readonly node: TextAreaNode }) {
   const context = useRendererContext()
   const value = toTextValue(context.state.fields[node.dataPath]?.value)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const rows = node.props.rows ?? 4
+  const maxRows = node.props.maxRows
+
+  useEffect(() => {
+    if (maxRows !== undefined) {
+      resizeTextArea(textareaRef.current, rows, maxRows)
+    }
+  }, [maxRows, rows, value])
 
   return (
     <FieldFrame node={node}>
       {(control) => (
         <textarea
           {...control}
+          data-a2ui-max-rows={maxRows}
           onBlur={() => context.controller.blur(node.dataPath)}
-          onChange={(event) => context.controller.setValue(node.dataPath, event.currentTarget.value)}
+          onChange={(event) => {
+            context.controller.setValue(node.dataPath, event.currentTarget.value)
+            if (maxRows !== undefined) {
+              resizeTextArea(event.currentTarget, rows, maxRows)
+            }
+          }}
           placeholder={node.props.placeholder}
-          rows={node.props.rows}
+          ref={textareaRef}
+          rows={rows}
           value={value}
         />
       )}
@@ -1025,6 +1040,30 @@ function parseNumberOnBlur(value: string): number | undefined {
   }
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function isEditableSingleLineTextInput(target: EventTarget | null): target is HTMLInputElement {
+  if (!(target instanceof HTMLInputElement) || target.disabled || target.readOnly) {
+    return false
+  }
+  return ['text', 'email', 'password', 'search', 'tel', 'url'].includes(target.type)
+}
+
+function resizeTextArea(textarea: HTMLTextAreaElement | null, rows: number, maxRows: number): void {
+  if (textarea === null) {
+    return
+  }
+  const computedLineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight)
+  const lineHeight = Number.isFinite(computedLineHeight) && computedLineHeight > 0 ? computedLineHeight : 20
+  const minHeight = lineHeight * rows
+  const maxHeight = lineHeight * maxRows
+
+  textarea.style.height = 'auto'
+  textarea.style.minHeight = `${minHeight}px`
+  textarea.style.maxHeight = `${maxHeight}px`
+  const contentHeight = Math.max(textarea.scrollHeight, minHeight)
+  textarea.style.height = `${Math.min(contentHeight, maxHeight)}px`
+  textarea.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden'
 }
 
 function getFocusableElements(container: HTMLElement | null): readonly HTMLElement[] {

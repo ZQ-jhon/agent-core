@@ -442,6 +442,44 @@ describe('A2UI form renderer', () => {
     expect(submit).not.toHaveBeenCalled()
   })
 
+  it('caps auto-growing text areas at maxRows and only submits editable single-line text inputs on Enter', async () => {
+    const submit = vi.fn(async () => ({ status: 'success' as const, result: { submissionId: 'submission-2' } }))
+    const document = documentWith(
+      { name: '', notes: '', plan: 'free' },
+      [
+        { id: 'name', type: 'TextInput', props: { label: 'Name' }, children: [], dataPath: '/name' },
+        { id: 'notes', type: 'TextArea', props: { label: 'Notes', rows: 2, maxRows: 4 }, children: [], dataPath: '/notes' },
+        {
+          id: 'plan',
+          type: 'Select',
+          props: { label: 'Plan', options: [{ label: 'Free', value: 'free' }, { label: 'Pro', value: 'pro' }] },
+          children: [],
+          dataPath: '/plan',
+        },
+        { id: 'submit', type: 'Button', props: { label: 'Submit' }, children: [], action: { actionId: 'submit' } },
+      ],
+      [{ id: 'submit', type: 'submit', endpointKey: 'forms.submit', method: 'POST' }],
+      { submitOnEnter: true },
+    )
+    const controller = createA2UIFormController(document, { submit })
+    render(<A2UIFormRenderer controller={controller} document={document} />)
+
+    const notes = screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement
+    Object.defineProperty(notes, 'scrollHeight', { configurable: true, value: 200 })
+    fireEvent.change(notes, { target: { value: 'A long note' } })
+    expect(notes).toHaveAttribute('data-a2ui-max-rows', '4')
+    expect(notes.style.maxHeight).toBe('80px')
+    expect(notes.style.height).toBe('80px')
+    expect(notes.style.overflowY).toBe('auto')
+
+    fireEvent.keyDown(notes, { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Plan' }), { key: 'Enter' })
+    expect(submit).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Name' }), { key: 'Enter' })
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1))
+  })
+
   it('uses a host bridge for keyboard-triggerable uploads, commits only server file references, and enforces type and size limits', async () => {
     const document = documentWith(
       { files: [] },
