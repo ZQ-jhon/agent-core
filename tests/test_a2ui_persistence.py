@@ -590,3 +590,23 @@ def test_registry_accepts_only_the_shared_profile_model(tmp_path: Path) -> None:
 
     with pytest.raises(ProtocolValidationError):
         InMemoryFormRegistry.from_documents([malformed])
+
+
+def test_public_type_annotations_resolve_without_name_error() -> None:
+    """``typing.get_type_hints`` must resolve all module-level public
+    callables without raising ``NameError``, as required by port contracts."""
+    import typing
+
+    import agent_core.a2ui_submission.forms as mod
+
+    for name in ("validate_submission_data", "_validate_file_references"):
+        target = getattr(mod, name)
+        # get_type_hints raises NameError if any annotation references
+        # an undefined name (issue: undefined ``Principal``).
+        hints = typing.get_type_hints(target)
+        assert "principal" in hints
+
+    # ``FileReferenceVerifier`` / ``RemoteOptionVerifier`` are ``Callable``
+    # type aliases — ``get_type_hints`` does not apply to them, but their
+    # annotations were verified indirectly via ``validate_submission_data``
+    # and ``_validate_file_references`` whose signatures consume them.
