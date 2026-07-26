@@ -181,7 +181,21 @@ def create_submission_router(
         )
         if isinstance(authorization, JSONResponse):
             return authorization
-        service.audit_read(principal=principal, response=response)
+        try:
+            service.audit_read(principal=principal, response=response)
+        except Exception:
+            # The audit port is part of the read integrity boundary.  Do not
+            # leak an arbitrary port exception (or response data) through the
+            # framework's default error handling or diagnostic logs.
+            logger.error("A2UI submission read audit failed")
+            return _submit_error_response(
+                status_code=500,
+                request_id="unknown",
+                form_id="unknown",
+                code="INTERNAL_ERROR",
+                message="An internal error prevented the request from completing.",
+                retryable=True,
+            )
         return JSONResponse(
             status_code=200,
             content=response,

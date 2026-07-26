@@ -539,6 +539,40 @@ def test_owner_isolation_and_authorized_read_gate(tmp_path: Path) -> None:
     assert revoked.headers["cache-control"] == "no-store"
 
 
+def test_audit_read_failure_fails_closed_with_safe_json_error_and_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    components = _components(tmp_path)
+    with TestClient(components.app) as client:
+        created = client.post(SUBMIT_PATH, json=_payload(), headers=_headers())
+    submission_id = created.json()["result"]["submissionId"]
+    secret = "audit-port-secret-13800138000"
+
+    def fail_audit_read(*, principal, response) -> None:
+        del principal, response
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(components.service, "audit_read", fail_audit_read)
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="agent_core.a2ui_submission.http"):
+        with TestClient(components.app) as client:
+            read = client.get(f"/api/a2ui/v1/submissions/{submission_id}", headers=_headers())
+
+    assert read.status_code == 500
+    assert read.headers["content-type"].startswith("application/json")
+    error = FormSubmitErrorV1.model_validate(read.json())
+    assert error.status == "error"
+    assert error.request_id == "unknown"
+    assert error.form_id == "unknown"
+    assert error.errors[0].code == "INTERNAL_ERROR"
+    assert error.errors[0].retryable is True
+    assert secret not in read.text
+    assert secret not in caplog.text
+    assert "A2UI submission read audit failed" in caplog.text
+
+
 def test_concurrent_same_key_creates_one_submission(tmp_path: Path) -> None:
     components = _components(tmp_path)
     command = validate_form_submit_request(_payload())
