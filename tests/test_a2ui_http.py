@@ -104,6 +104,25 @@ def test_resolve_returns_validated_snapshot_after_host_authorization() -> None:
     )
 
 
+def test_resolve_openapi_declares_shared_request_and_response_models() -> None:
+    app = create_a2ui_app(
+        principal_provider=lambda _: TRUSTED_PRINCIPAL,
+        form_authorizer=lambda *_: AuthorizedResolveContext(),
+        form_resolver=lambda *_: _approved_document(),
+    )
+
+    operation = app.openapi()["paths"][RESOLVE_PATH]["post"]
+    assert operation["requestBody"]["required"] is True
+    assert operation["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/A2UIFormDocumentV1"
+    )
+    for status_code in ("400", "401", "403", "404", "422", "500"):
+        assert operation["responses"][status_code]["content"]["application/json"]["schema"]["$ref"] == (
+            "#/components/schemas/FormResolveErrorV1"
+        )
+
+
 def test_missing_principal_returns_401_without_authorizing_or_resolving() -> None:
     calls: list[str] = []
 
