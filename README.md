@@ -334,7 +334,11 @@ A: 用的话不需要 —— 改 `.env` 和 `examples/basic.py` 里的工具就�
 PYTHONPATH="" uv run pytest tests/ -v
 ```
 
-当前 8 个测试全部通过。
+运行完整测试套件以验证当前实现。
+
+## A2UI 表单提交持久化
+
+冻结的 A2UI Form Profile v1 现提供独立的提交持久化适配层，不影响既有 Agent 文本 API。数据库配置、迁移命令、受保护 API、OpenAPI 地址、开发示例与生产替换边界见 [提交持久化说明](docs/a2ui/v1/submission-persistence.md)。
 
 ---
 
