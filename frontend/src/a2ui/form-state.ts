@@ -47,6 +47,16 @@ export interface FormFieldError {
   readonly componentId?: StableId
 }
 
+/**
+ * A renderer-owned validation error for an in-progress native control value.
+ * It is deliberately data-only: a renderer cannot inject arbitrary HTML or
+ * mutate form data merely to surface an input parsing error.
+ */
+export interface FormTransientError {
+  readonly code: string
+  readonly message: string
+}
+
 export interface FormErrorSummaryItem extends FormFieldError {
   readonly path?: DataPath
   readonly retryable?: boolean
@@ -190,6 +200,7 @@ export interface A2UIFormController {
   getValue(dataPath: DataPath): JsonValue | undefined
   getSubmissionData(): Readonly<Record<string, JsonValue>>
   setValue(dataPath: DataPath, value: JsonValue): boolean
+  setTransientError(dataPath: DataPath, error?: FormTransientError): boolean
   blur(dataPath: DataPath): readonly FormFieldError[]
   validateField(dataPath: DataPath): readonly FormFieldError[]
   validateForm(): boolean
@@ -251,6 +262,7 @@ export function createA2UIFormController(
 
   let values = cloneJsonValue(initialValues) as Record<string, JsonValue>
   let clientErrors = new Map<DataPath, FormFieldError>()
+  let transientErrors = new Map<DataPath, FormFieldError>()
   let serverErrors = new Map<DataPath, readonly FormFieldError[]>()
   let formErrors: FormErrorSummaryItem[] = []
   let touchedPaths = new Set<DataPath>()
@@ -368,7 +380,12 @@ export function createA2UIFormController(
         notify()
         return false
       }
+      const clearedTransientError = transientErrors.delete(dataPath)
       if (current.found && equalJsonValue(current.value, value)) {
+        if (clearedTransientError) {
+          refreshSnapshot()
+          notify()
+        }
         return true
       }
 
@@ -377,6 +394,26 @@ export function createA2UIFormController(
       invalidateTerminalSubmission()
       if (!blockingConfiguration) {
         executeRuleBatches([dataPath])
+      }
+      refreshSnapshot()
+      notify()
+      return true
+    },
+    setTransientError(dataPath: DataPath, error?: FormTransientError): boolean {
+      if (submission.status === 'submitting' || !fieldComponentIds.has(dataPath)) {
+        return false
+      }
+      const interactive = (fieldComponentIds.get(dataPath) ?? []).some((componentId) => {
+        const state = getEffectiveComponentStates().get(componentId)
+        return state?.visible === true && state.disabled === false
+      })
+      if (!interactive) {
+        return false
+      }
+      if (error === undefined) {
+        transientErrors.delete(dataPath)
+      } else {
+        transientErrors.set(dataPath, { ...error, source: 'client' })
       }
       refreshSnapshot()
       notify()
@@ -474,6 +511,7 @@ export function createA2UIFormController(
       }
       values = cloneJsonValue(initialValues) as Record<string, JsonValue>
       clientErrors = new Map()
+      transientErrors = new Map()
       serverErrors = new Map()
       formErrors = []
       touchedPaths = new Set()
@@ -661,6 +699,7 @@ export function createA2UIFormController(
   function resetThroughAction(): void {
     values = cloneJsonValue(initialValues) as Record<string, JsonValue>
     clientErrors = new Map()
+    transientErrors = new Map()
     serverErrors = new Map()
     formErrors = []
     touchedPaths = new Set()
@@ -726,7 +765,13 @@ export function createA2UIFormController(
 
     if (boundNodes.length === 0) {
       clientErrors.delete(dataPath)
+      transientErrors.delete(dataPath)
       return []
+    }
+    const transientError = transientErrors.get(dataPath)
+    if (transientError !== undefined) {
+      clientErrors.set(dataPath, transientError)
+      return [transientError]
     }
     const value = getDataPathValue(values, dataPath)
     if (!value.found) {
@@ -1083,6 +1128,7 @@ export function createA2UIFormController(
       })
       if (!interactive) {
         clientErrors.delete(dataPath)
+        transientErrors.delete(dataPath)
       }
     }
   }

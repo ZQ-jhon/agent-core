@@ -20,6 +20,7 @@ export type {
   UnsupportedComponentPlaceholderProps,
 } from './safe-rendering.tsx'
 export { createA2UIFormController, formRuntimeDiagnosticCodes } from './form-state.ts'
+export { A2UIFormRenderer } from './form-renderer.tsx'
 export { useA2UIFormState } from './use-form-state.ts'
 export type {
   A2UIFormController,
@@ -33,6 +34,7 @@ export type {
   FormFieldState,
   FormRuntimeDiagnostic,
   FormRuntimeDiagnosticCode,
+  FormTransientError,
   FormServerError,
   FormSubmissionResult,
   FormSubmissionState,
@@ -45,6 +47,13 @@ export type {
   FormSubmitTransport,
   FormSubmitValidationErrorResponse,
 } from './form-state.ts'
+export type {
+  A2UIFormRendererProps,
+  A2UIUploadRequest,
+  A2UIUploadResult,
+  A2UIUploadTransport,
+} from './form-renderer.tsx'
+export type { UploadValue } from './bound-value.ts'
 export { A2UI_FORM_SCHEMA_VERSION } from './types.ts'
 export type {
   A2UIFormDocumentV1,

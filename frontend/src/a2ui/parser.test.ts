@@ -73,6 +73,48 @@ describe('A2UI Form Profile v1 parser', () => {
     }
   })
 
+  it('allows only the A2UI autocomplete protocol whitelist instead of forwarding arbitrary schema strings', () => {
+    const schemaWithAutoComplete = (autoComplete: string) => ({
+      schemaVersion: '1.0.0',
+      requestId: 'request-autocomplete',
+      formId: 'form-autocomplete',
+      revision: 1,
+      root: {
+        id: 'form-root',
+        type: 'Form',
+        props: {},
+        children: [{
+          id: 'email',
+          type: 'TextInput',
+          props: { label: 'Email', autoComplete },
+          children: [],
+          dataPath: '/email',
+        }],
+      },
+      data: { initialValues: { email: '' } },
+      actions: [],
+    })
+
+    const allowed = parseA2UIFormDocument(schemaWithAutoComplete('email'))
+    expect(allowed.ok).toBe(true)
+    if (allowed.ok) {
+      const email = allowed.value.root.children[0]
+      expect(email?.type).toBe('TextInput')
+      if (email?.type === 'TextInput') {
+        expect(email.props.autoComplete).toBe('email')
+      }
+    }
+
+    const rejected = parseA2UIFormDocument(schemaWithAutoComplete('javascript:prompt(1)'))
+    expect(rejected.ok).toBe(false)
+    if (!rejected.ok) {
+      expect(rejected.errors).toContainEqual(expect.objectContaining({
+        code: 'SCHEMA_INVALID',
+        path: '/root/children/0/props/autoComplete',
+      }))
+    }
+  })
+
   it('rejects unknown components rather than resolving an import or executing configuration', () => {
     const schema = {
       schemaVersion: '1.0.0',

@@ -8,3 +8,4 @@ __pycache__/
 checkpoints/
 dist/
 *.egg-info/
+.vercel
