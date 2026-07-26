@@ -8,6 +8,7 @@ JSON and is never converted into a terminal identity.
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 from collections.abc import Mapping
@@ -42,6 +43,23 @@ _DATA_PATH_PATTERN = r"^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$"
 _ENDPOINT_KEY_PATTERN = r"^[A-Za-z][A-Za-z0-9._-]*$"
 _ERROR_CODE_PATTERN = r"^[A-Z][A-Z0-9_]*$"
 _SEMVER_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
+
+_STRICT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?"
+    r"(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+
+
+def _parse_strict_date(value: str) -> None:
+    """Validate *value* is strict YYYY-MM-DD (JSON Schema ``format: date``)."""
+    if not _STRICT_DATE_RE.match(value):
+        raise ValueError("date must use YYYY-MM-DD format")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("date must use YYYY-MM-DD format") from exc
 
 StableId = Annotated[
     str,
@@ -288,9 +306,78 @@ class NumberValidator(A2UIModel):
         return value
 
 
-_RE2_UNSUPPORTED_PATTERN = re.compile(
-    r"(?:\\[1-9]|\\k<|\(\?(?:[=!<]|P[=<]|\(|R|&))"
-)
+def _validate_re2_pattern(value: str) -> str:
+    """Validate *value* uses only RE2-compatible regex features.
+
+    Does NOT execute the pattern and does NOT fall back to Python ``re``
+    compilation as a proxy for RE2 acceptance.
+
+    The scanner performs a single character-level pass.  It tracks whether the
+    cursor is inside a ``[...]`` character class so that possessive-quantifier
+    detection (``*+``, ``++``, ``?+``, ``{…}+``) is disabled inside brackets.
+    Escaped ``\\]`` is consumed by the escape branch before the bare-``]``
+    check, so it never spuriously closes a class.
+    """
+    i = 0
+    n = len(value)
+    in_char_class = False
+
+    while i < n:
+        ch = value[i]
+
+        if ch == "\\":
+            if i + 1 < n:
+                nxt = value[i + 1]
+                # Backreference: \\1 .. \\9
+                if nxt.isdigit() and nxt != "0":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named backreference: \\k<name>  or  \\k'name'
+                if nxt == "k" and i + 2 < n and value[i + 2] in ("<", "'"):
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+            i += 2
+            continue
+
+        if ch == "[" and not in_char_class:
+            in_char_class = True
+            i += 1
+            continue
+        if ch == "]" and in_char_class:
+            in_char_class = False
+            i += 1
+            continue
+
+        if not in_char_class:
+            # Atomic group: (?>
+            if value[i : i + 3] == "(?>":
+                raise ValueError("pattern uses a feature outside the RE2 subset")
+
+            # Lookahead / lookbehind / conditional / recursion /
+            # named-capture-definition.
+            if value[i : i + 2] == "(?" and i + 2 < n:
+                after = value[i + 2]
+                if after in "=!<":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named capture definition: (?P<name>  — must reject explicitly.
+                if i + 3 < n and value[i : i + 4] == "(?P<":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named backreference: (?P=name)
+                if i + 3 < n and value[i : i + 4] == "(?P=":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Conditional: (?(
+                if value[i : i + 3] == "(?(":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                if after in "R&":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+
+            # Possessive quantifiers: *+, ++, ?+, {…}+
+            if ch in "*+?" and i + 1 < n and value[i + 1] == "+":
+                raise ValueError("pattern uses a feature outside the RE2 subset")
+            if ch == "}" and i + 1 < n and value[i + 1] == "+":
+                raise ValueError("pattern uses a feature outside the RE2 subset")
+
+        i += 1
+
+    return value
 
 
 class PatternValidator(A2UIModel):
@@ -302,9 +389,7 @@ class PatternValidator(A2UIModel):
     @field_validator("value")
     @classmethod
     def _re2_compatible(cls, value: str) -> str:
-        if _RE2_UNSUPPORTED_PATTERN.search(value):
-            raise ValueError("pattern uses a feature outside the RE2 subset")
-        return value
+        return _validate_re2_pattern(value)
 
 
 class IntegerValidator(A2UIModel):
@@ -416,10 +501,7 @@ class DatePickerProps(CommonInputProps):
     @classmethod
     def _iso_date(cls, value: str | None) -> str | None:
         if value is not None:
-            try:
-                datetime.fromisoformat(f"{value}T00:00:00")
-            except ValueError as exc:
-                raise ValueError("date must use YYYY-MM-DD") from exc
+            _parse_strict_date(value)
         return value
 
     @model_validator(mode="after")
@@ -670,12 +752,15 @@ class DocumentMeta(A2UIModel):
 
 
 def _validate_rfc3339(value: str) -> str:
+    """Return *value* if it is a strict RFC 3339 timestamp (JSON Schema
+    ``format: date-time``).  Rejects space separators, basic date/time
+    forms, and non-standard offsets."""
+    if not _RFC3339_RE.match(value):
+        raise ValueError("timestamp must use RFC 3339 format")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
     except ValueError as exc:
         raise ValueError("timestamp must use RFC 3339 format") from exc
-    if parsed.tzinfo is None:
-        raise ValueError("timestamp must include a UTC offset")
     return value
 
 
@@ -859,6 +944,47 @@ def _decode_pointer_token(token: str) -> str:
     return token.replace("~1", "/").replace("~0", "~")
 
 
+def _pointer_tokens(pointer: str) -> list[str]:
+    """Decode a JSON Pointer (RFC 6901) into its decoded token list.
+
+    The empty string and ``"/"`` both yield the empty list (document root).
+    """
+    if not pointer or pointer == "/":
+        return []
+    return [_decode_pointer_token(token) for token in pointer.removeprefix("/").split("/")]
+
+
+def _apply_setvalue_effect(initial_values: dict[str, Any], pointer: str, value: Any) -> dict[str, Any]:
+    """Return a deep copy of *initial_values* with *value* set at *pointer*.
+
+    Intermediate dicts are created for non-existent tokens when the preceding
+    token resolves to a dict (allowable for ancestor-replace overlaps).
+    """
+    result = copy.deepcopy(initial_values)
+    tokens = _pointer_tokens(pointer)
+    if not tokens:
+        return result
+    target: Any = result
+    for token in tokens[:-1]:
+        if isinstance(target, dict):
+            if token not in target:
+                target[token] = {}
+            target = target[token]
+        elif isinstance(target, list):
+            index = int(token)
+            if index >= len(target):
+                return result
+            target = target[index]
+        else:
+            return result
+    last = tokens[-1]
+    if isinstance(target, dict):
+        target[last] = value
+    elif isinstance(target, list):
+        target[int(last)] = value
+    return result
+
+
 def _resolve_pointer(document: Any, pointer: str) -> Any:
     value = document
     for raw_token in pointer.removeprefix("/").split("/"):
@@ -971,14 +1097,14 @@ def _validate_condition_types(condition: Condition, initial_values: dict[str, An
 
         if cond.op in {"greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual"}:
             if _is_number(source_value) and _is_number(cond.value):
-                return
+                continue
             if type(source_value) is str and type(cond.value) is str:
                 try:
-                    datetime.fromisoformat(f"{source_value}T00:00:00")
-                    datetime.fromisoformat(f"{cond.value}T00:00:00")
+                    _parse_strict_date(source_value)
+                    _parse_strict_date(cond.value)
                 except ValueError as exc:
                     raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
-                return
+                continue
             raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID)
 
 
@@ -992,7 +1118,7 @@ def _validate_input_value(node: ComponentNode, value: Any) -> None:
             if type(value) is not str:
                 raise _SemanticIssue(ProtocolErrorCode.DATA_BINDING_INVALID)
             try:
-                datetime.fromisoformat(f"{value}T00:00:00")
+                _parse_strict_date(value)
             except ValueError as exc:
                 raise _SemanticIssue(ProtocolErrorCode.DATA_BINDING_INVALID) from exc
     elif component_type == "NumberInput":
@@ -1083,6 +1209,26 @@ def _assert_acyclic(graph: dict[str, set[str]]) -> None:
                 stack.append((target, False))
 
 
+# Validator → compatible component value types.
+# When the value type is statically ambiguous (e.g. Select / RadioGroup can
+# hold any scalar), the validator is rejected — this is an explicit, testable
+# rule that prevents the Python model, frontend renderer, and submission
+# validator from diverging.
+_VALIDATOR_TYPE_MATRIX: dict[str, frozenset[str]] = {
+    "required": frozenset(
+        {*_INPUT_COMPONENT_TYPES}
+    ),
+    "minLength": frozenset({"TextInput", "TextArea", "DatePicker"}),
+    "maxLength": frozenset({"TextInput", "TextArea", "DatePicker"}),
+    "pattern": frozenset({"TextInput", "TextArea", "DatePicker"}),
+    "minItems": frozenset({"CheckboxGroup", "Upload"}),
+    "maxItems": frozenset({"CheckboxGroup", "Upload"}),
+    "minimum": frozenset({"NumberInput"}),
+    "maximum": frozenset({"NumberInput"}),
+    "integer": frozenset({"NumberInput"}),
+}
+
+
 def _validate_validator_bounds(node: ComponentNode) -> None:
     if not node.validation:
         return
@@ -1098,6 +1244,19 @@ def _validate_validator_bounds(node: ComponentNode) -> None:
         raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
     if values.get("minimum", float("-inf")) > values.get("maximum", float("inf")):
         raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
+
+
+def _validate_validator_compatibility(node: ComponentNode) -> None:
+    """Reject validators that are incompatible with the component's value type."""
+    if not node.validation:
+        return
+    component_type = node.type
+    for validator in node.validation:
+        allowed = _VALIDATOR_TYPE_MATRIX.get(validator.type)
+        if allowed is None:
+            raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
+        if component_type not in allowed:
+            raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
 
 
 def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
@@ -1132,13 +1291,20 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
     sources_by_id = {source.id: source for source in data_sources}
 
     if document.generated_at is not None and document.expires_at is not None:
-        generated = datetime.fromisoformat(document.generated_at.replace("Z", "+00:00"))
-        expires = datetime.fromisoformat(document.expires_at.replace("Z", "+00:00"))
+        generated = datetime.fromisoformat(document.generated_at.replace("Z", "+00:00").replace("z", "+00:00"))
+        expires = datetime.fromisoformat(document.expires_at.replace("Z", "+00:00").replace("z", "+00:00"))
         if expires <= generated:
             raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
 
+    # Build dataPath → bound component mapping for setValue type validation.
+    _path_components: dict[str, list[ComponentNode]] = {}
+    for node in nodes:
+        if node.type in _INPUT_COMPONENT_TYPES and node.data_path:
+            _path_components.setdefault(node.data_path, []).append(node)
+
     for node in nodes:
         _validate_validator_bounds(node)
+        _validate_validator_compatibility(node)
         if node.type in _INPUT_COMPONENT_TYPES:
             try:
                 value = _resolve_pointer(document.data.initial_values, node.data_path or "")
@@ -1185,6 +1351,39 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
                 except KeyError as exc:
                     raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
                 graph.setdefault(rule.source_data_path, set()).add(effect.target_data_path)
+                # Validate setValue value type against every component whose
+                # dataPath overlaps with the target (exact, ancestor, or descendant).
+                effect_tokens = _pointer_tokens(effect.target_data_path)
+                for bound_path, bound_nodes in _path_components.items():
+                    bound_tokens = _pointer_tokens(bound_path)
+                    is_exact = bound_tokens == effect_tokens
+                    # bound is ancestor of effect: effect modifies a sub-path of the bound value.
+                    bound_is_ancestor = (
+                        len(bound_tokens) < len(effect_tokens)
+                        and bound_tokens == effect_tokens[: len(bound_tokens)]
+                    )
+                    # effect is ancestor of bound: effect replaces a parent containing the bound value.
+                    effect_is_ancestor = (
+                        len(effect_tokens) < len(bound_tokens)
+                        and effect_tokens == bound_tokens[: len(effect_tokens)]
+                    )
+                    if is_exact:
+                        for bound_node in bound_nodes:
+                            _validate_input_value(bound_node, effect.value)
+                    elif bound_is_ancestor or effect_is_ancestor:
+                        simulated = _apply_setvalue_effect(
+                            document.data.initial_values,
+                            effect.target_data_path,
+                            effect.value,
+                        )
+                        try:
+                            new_value = _resolve_pointer(simulated, bound_path)
+                        except KeyError:
+                            raise _SemanticIssue(
+                                ProtocolErrorCode.RULE_INVALID
+                            ) from None
+                        for bound_node in bound_nodes:
+                            _validate_input_value(bound_node, new_value)
     _assert_acyclic(graph)
 
 
