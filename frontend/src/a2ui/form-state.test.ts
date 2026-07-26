@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createA2UIFormController } from './form-state.ts'
+import { createA2UIFormController, type FormSubmitResponse } from './form-state.ts'
 import { parseA2UIFormDocument } from './parser.ts'
 import type { NormalizedA2UIFormDocumentV1 } from './types.ts'
 
@@ -328,6 +328,50 @@ describe('A2UI form state controller', () => {
     expect(controller.getSnapshot().errors.summary).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'FIELD_ERROR_UNMAPPED', path: '/missing' }),
     ]))
+  })
+
+  it('atomically replaces server field errors on each validation response', async () => {
+    const document = documentWith(
+      { name: '', email: '' },
+      [textInput('name', '/name'), textInput('email', '/email'), submitButton()],
+      { actions: [submitAction()] },
+    )
+    const responses: readonly FormSubmitResponse[] = [
+      {
+        status: 'validation_error',
+        fieldErrors: {
+          '/name': [{ code: 'NAME_INVALID', message: 'Name needs review', retryable: false }],
+        },
+      },
+      {
+        status: 'validation_error',
+        fieldErrors: {
+          '/email': [{ code: 'EMAIL_INVALID', message: 'Email needs review', retryable: false }],
+        },
+      },
+    ]
+    let submissionCount = 0
+    const controller = createA2UIFormController(document, {
+      submit: async () => {
+        const response = responses[submissionCount]
+        submissionCount += 1
+        if (response === undefined) {
+          throw new Error('Unexpected extra submission')
+        }
+        return response
+      },
+    })
+
+    expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({ status: 'server_validation_error' })
+    expect(controller.getSnapshot().errors.fieldErrors['/name']).toEqual([
+      expect.objectContaining({ code: 'NAME_INVALID', source: 'server' }),
+    ])
+
+    expect(await controller.dispatchAction('submit', 'submit-button')).toEqual({ status: 'server_validation_error' })
+    expect(controller.getSnapshot().errors.fieldErrors['/name']).toBeUndefined()
+    expect(controller.getSnapshot().errors.fieldErrors['/email']).toEqual([
+      expect.objectContaining({ code: 'EMAIL_INVALID', source: 'server' }),
+    ])
   })
 
   it('rejects disabled action sources and does not retry a revision conflict', async () => {

@@ -578,6 +578,7 @@ export function createA2UIFormController(
 
     if (response.status === 'validation_error') {
       formErrors = (response.errors ?? []).map((error) => toSummaryError(error.code, error.message, error.retryable, error.componentId))
+      const nextServerErrors = new Map<DataPath, readonly FormFieldError[]>()
       for (const [rawPath, errors] of Object.entries(response.fieldErrors)) {
         const dataPath = rawPath as DataPath
         if (!fieldComponentIds.has(dataPath)) {
@@ -591,7 +592,7 @@ export function createA2UIFormController(
           reportRuntimeDiagnostic('FIELD_ERROR_UNMAPPED', 'A server field error did not match a rendered dataPath.', dataPath)
           continue
         }
-        serverErrors.set(
+        nextServerErrors.set(
           dataPath,
           errors.map((error) => ({
             code: error.code,
@@ -601,6 +602,7 @@ export function createA2UIFormController(
           })),
         )
       }
+      serverErrors = nextServerErrors
       retryableSubmission = undefined
       submission = {
         status: 'validation_error',
@@ -616,6 +618,7 @@ export function createA2UIFormController(
     }
 
     const hasRevisionConflict = response.errors.some((error) => error.code === 'FORM_REVISION_CONFLICT')
+    serverErrors = new Map()
     formErrors = response.errors.map((error) => toSummaryError(error.code, error.message, hasRevisionConflict ? false : error.retryable, error.componentId))
     const retryable = !hasRevisionConflict && response.errors.some((error) => error.retryable)
     retryableSubmission = retryable ? { request: retryRequest } : undefined
