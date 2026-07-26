@@ -25,41 +25,43 @@ async function main() {
   const stderrChunks = []
   server.stderr.on('data', (chunk) => stderrChunks.push(chunk))
 
-  let serverReady = false
-  let serverExited = false
-
   server.on('exit', (code) => {
-    serverExited = true
     if (code !== 0 && code !== null) {
       stderrChunks.forEach((c) => process.stderr.write(c))
     }
   })
 
-  // Wait for server to signal ready — fail if it exits or times out
-  const serverTimeoutMs = 10000
-  await new Promise((ok, fail) => {
-    server.stdout.on('data', (chunk) => {
-      if (chunk.toString().includes('ready')) {
-        serverReady = true
-        ok()
-      }
-    })
-    server.on('exit', (code) => {
-      if (!serverReady) fail(new Error(`E2E server exited with code ${code} before ready`))
-    })
-    setTimeout(() => {
-      if (!serverReady) fail(new Error(`E2E server did not become ready within ${serverTimeoutMs}ms`))
-    }, serverTimeoutMs)
-  })
-
-  // Run Playwright — preserve its actual exit code
-  let playwrightCode = 0
+  // Single try/finally wraps everything that depends on the server: ready wait,
+  // Playwright run, and cleanup — so the server is always killed regardless of
+  // where the failure originates (timeout, premature exit, assertion failure).
+  let exitCode = 0
   try {
-    await exec('pnpm', ['exec', 'playwright', 'test'], { env: { ...process.env, CI: 'true' } })
+    // Wait for server to signal ready — fail if it exits or times out
+    const serverTimeoutMs = 10000
+    let readyTimer
+    await new Promise((ok, fail) => {
+      server.stdout.on('data', (chunk) => {
+        if (chunk.toString().includes('ready')) {
+          clearTimeout(readyTimer)
+          ok()
+        }
+      })
+      server.on('exit', (code) => fail(new Error(`E2E server exited with code ${code} before ready`)))
+      readyTimer = setTimeout(() => fail(new Error(`E2E server did not become ready within ${serverTimeoutMs}ms`)), serverTimeoutMs)
+    })
+
+    // Run Playwright — preserve its actual exit code
+    try {
+      await exec('pnpm', ['exec', 'playwright', 'test'], { env: { ...process.env, CI: 'true' } })
+    } catch {
+      exitCode = 1
+    }
   } catch (err) {
-    playwrightCode = 1
+    // Ready timeout or server premature exit — log and set failure code
+    console.error(err.message ?? err)
+    exitCode = 1
   } finally {
-    // Kill the server process tree and wait for port release
+    // Always terminate the server and wait for it to release the port
     try { process.kill(server.pid, 'SIGTERM') } catch {}
     await new Promise((ok) => {
       if (server.killed) return ok()
@@ -69,7 +71,7 @@ async function main() {
         ok()
       }, 3000)
     })
-    if (playwrightCode !== 0) process.exit(playwrightCode)
+    if (exitCode !== 0) process.exit(exitCode)
   }
 }
 
