@@ -387,6 +387,9 @@ that authorization succeeds.
 
 The read response contains validated persisted `data`.  It is intentionally
 available only to the authenticated, authorized owner; it is not a log payload.
+Every successful read also sets `Cache-Control: no-store`, so owner-visible
+persisted data is not retained by client caches after logout or an authorization
+change.
 
 ## Observability and sensitive-data handling
 

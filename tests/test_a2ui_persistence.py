@@ -248,6 +248,7 @@ def test_real_combined_tree_imports_resolves_and_persists(tmp_path: Path) -> Non
     assert resolved.status_code == 200
     assert created.status_code == 200
     assert read.status_code == 200
+    assert read.headers["cache-control"] == "no-store"
     assert read.json()["data"] == {"profile": {"phone": "13800138000"}}
 
 
