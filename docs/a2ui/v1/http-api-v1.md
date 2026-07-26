@@ -314,9 +314,11 @@ A submit body with `schemaVersion: "1.0.1"` returns HTTP 400
 ```
 
 Submit authenticates before parsing the body.  Therefore an unauthenticated
-request returns HTTP 401 with `requestId` and `formId` set to `"unknown"`,
-even if its body happens to contain identifiers.  A parsed, authenticated, but
-unauthorized request returns HTTP 403 with its validated IDs:
+request returns HTTP 401 with `requestId` set to `"unknown"` and `formId` set
+from the safe requested path parameter (for this route,
+`"single-field-update"`).  Body identifiers are neither parsed nor echoed
+before authentication.  A parsed, authenticated, but unauthorized request
+returns HTTP 403 with its validated IDs:
 
 ```json
 {

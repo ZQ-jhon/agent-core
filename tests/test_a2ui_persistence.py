@@ -127,8 +127,10 @@ class FormPolicy:
     """A test host implementation of PR #8's FormAuthorizer port."""
 
     denied_subjects: set[str] = field(default_factory=set)
+    calls: int = 0
 
     def __call__(self, principal, form_key, _untrusted_context):
+        self.calls += 1
         if principal.subject_id in self.denied_subjects:
             return None
         return AuthorizedResolveContext({"formKey": form_key})
@@ -393,6 +395,31 @@ def test_submit_router_consumes_submission_port_without_sqlite(tmp_path: Path) -
     assert principal == AuthenticatedPrincipal(subject_id="user-a", tenant_id="tenant-a")
     assert path_form_id == "single-field-update"
     assert command.idempotency_key == "idem-001"
+
+
+def test_unauthenticated_submit_uses_path_form_id_without_parsing_body() -> None:
+    service = RecordingSubmissionPort()
+    document = validate_form_document(_single_field_document())
+    authorizer = FormPolicy()
+    app = _compose_app(
+        service=service,
+        provider=TokenPrincipalProvider({}),
+        authorizer=authorizer,
+        document=document,
+    )
+    payload = _payload(request_id="body-request-id")
+    payload["formId"] = "conflicting-body-form-id"
+
+    with TestClient(app) as client:
+        response = client.post(SUBMIT_PATH, json=payload)
+
+    assert response.status_code == 401
+    body = response.json()
+    assert body["requestId"] == "unknown"
+    assert body["formId"] == "single-field-update"
+    assert body["errors"][0]["code"] == "UNAUTHENTICATED"
+    assert authorizer.calls == 0
+    assert service.submissions == []
 
 
 def test_generic_error_uses_shared_error_envelope(tmp_path: Path) -> None:
