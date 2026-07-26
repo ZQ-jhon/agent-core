@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "installCommand": "npm install --global pnpm@11.9.0 && pnpm --dir frontend install --frozen-lockfile",
-  "buildCommand": "cd frontend && pnpm build",
+  "installCommand": "npx --yes pnpm@11.9.0 --dir frontend install --frozen-lockfile",
+  "buildCommand": "npx --yes pnpm@11.9.0 --dir frontend build",
   "outputDirectory": "frontend/dist"
 }
