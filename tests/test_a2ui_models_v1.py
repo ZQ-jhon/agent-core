@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from agent_core.a2ui import (
     A2UI_FORM_SCHEMA_VERSION,
+    DatePickerProps,
     FormResolveRequestV1,
     FormSubmitRequestV1,
+    PatternValidator,
     ProtocolErrorCode,
     ProtocolValidationError,
     validate_api_message,
@@ -259,6 +262,266 @@ def test_resolve_context_is_untrusted_json_not_terminal_identity() -> None:
 
     request["principal"] = "attempted-terminal-identity"
     assert _error_code(lambda: validate_form_resolve_request(request)) == ProtocolErrorCode.SCHEMA_INVALID
+
+
+# ── Strict date / RFC 3339 / RE2 pattern validation (ISSUE-58) ──────────────
+
+
+@pytest.mark.parametrize(
+    ("valid_date",),
+    [
+        ("2026-01-01",),
+        ("2026-07-27",),
+        ("2026-12-31",),
+        ("2024-02-29",),  # leap year
+    ],
+)
+def test_datepicker_accepts_strict_yyyymmdd(valid_date: str) -> None:
+    """DatePicker minDate / maxDate accept only strict YYYY-MM-DD."""
+    DatePickerProps.model_validate({
+        "label": "test",
+        "minDate": valid_date,
+        "maxDate": "2027-01-01",
+    })
+
+
+@pytest.mark.parametrize(
+    ("invalid_date",),
+    [
+        ("20260727",),       # basic date – no dashes
+        ("27-07-2026",),     # DD-MM-YYYY
+        ("2026-07-27 00:00:00",),  # date-time instead of date
+        ("2026/07/27",),     # wrong separator
+        ("2026-7-27",),      # missing leading zero
+        ("2026-13-01",),     # invalid month
+        ("2026-02-30",),     # invalid day
+        ("",),               # empty string
+    ],
+)
+def test_datepicker_rejects_non_iso_date(invalid_date: str) -> None:
+    """DatePicker rejects non-ISO-8601 YYYY-MM-DD dates."""
+    with pytest.raises(ValidationError):
+        DatePickerProps.model_validate({
+            "label": "test",
+            "minDate": invalid_date,
+        })
+
+
+@pytest.mark.parametrize(
+    ("valid_ts",),
+    [
+        ("2026-07-25T10:00:00Z",),
+        ("2026-07-25T10:00:00+08:00",),
+        ("2026-07-25t10:00:00z",),  # lowercase z/t accepted by RFC 3339
+        ("2026-07-25T10:00:00.123456Z",),  # fractional seconds
+        ("2026-01-01T00:00:00+00:00",),
+    ],
+)
+def test_rfc3339_accepts_strict_timestamps(valid_ts: str) -> None:
+    """generatedAt/expiresAt accept only strict RFC 3339 timestamps."""
+    document = deepcopy(_examples()[0])
+    document["generatedAt"] = valid_ts
+    document["expiresAt"] = "2027-01-01T00:00:00Z"
+    validate_form_document(document)
+
+
+@pytest.mark.parametrize(
+    ("invalid_ts",),
+    [
+        ("2026-07-27 10:00:00+00:00",),   # space separator instead of T
+        ("2026-07-27 10:00:00Z",),         # space separator
+        ("20260727T10:00:00Z",),            # basic date (no dashes)
+        ("2026-07-27",),                    # date-only, no time
+        ("2026-07-27T10:00:00",),           # missing offset
+        ("2026-07-27T10:00:00+0000",),      # offset without colon
+        ("2026-07-27T10:00:00+00",),        # offset hour-only
+        ("2026-07-27T10:00:00 UTC",),       # named zone instead of offset
+    ],
+)
+def test_rfc3339_rejects_lenient_timestamps(invalid_ts: str) -> None:
+    """generatedAt rejects RFC 3339 non-conformant timestamps."""
+    document = deepcopy(_examples()[0])
+    document["generatedAt"] = invalid_ts
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    ("valid_pattern",),
+    [
+        (r"^1[3-9][0-9]{9}$",),
+        (r"[a-z]+",),
+        (r"\\d{3}-\\d{4}",),
+        (r"a|b",),
+        (r"(?:foo|bar)",),   # non-capturing group is RE2-safe
+        (r"[a-z&&[^aeiou]]",),  # character class intersection is RE2-safe
+        # Character class escaping: escaped ] inside brackets must be RE2-safe.
+        (r"[\\]]",),           # character class containing literal backslash and ]
+        (r"[\\]]+",),         # escaped-] + quantifier — must not trigger possessive detection
+        (r"[a-z\\]]",),        # range + escaped ]
+        (r"[-\\]]",),          # leading hyphen + escaped ]
+    ],
+)
+def test_pattern_accepts_re2_compatible(valid_pattern: str) -> None:
+    """PatternValidator accepts RE2-compatible patterns."""
+    PatternValidator.model_validate({"type": "pattern", "value": valid_pattern})
+
+
+@pytest.mark.parametrize(
+    ("invalid_pattern",),
+    [
+        ("(?<=prefix)",),       # lookbehind
+        ("(?=suffix)",),        # lookahead
+        ("(?!suffix)",),        # negative lookahead
+        ("(?<!prefix)",),       # negative lookbehind
+        ("(?>atomic)",),        # atomic group
+        (r"(a)\1",),            # backreference
+        (r"(?P<name>a)",),      # named capture definition (standalone)
+        (r"(?P<name>a)(?P=name)",),  # named capture + backreference
+        (r"\k<name>",),         # named backreference (\k<)
+        (r"\k'name'",),         # named backreference (\k')
+        ("(?R)",),              # recursion
+        ("(?&name)",),          # subroutine call
+        ("(?()|)",),            # conditional
+        ("a*+",),               # possessive quantifier *+
+        ("a++",),               # possessive quantifier ++
+        ("a?+",),               # possessive quantifier ?+
+        ("a{1,2}+",),           # possessive quantifier {}+
+        ("a{3}+",),             # possessive quantifier exact {}+
+        ("[a-z]++",),           # possessive quantifier after character class (outside)
+    ],
+)
+def test_pattern_rejects_non_re2(invalid_pattern: str) -> None:
+    """PatternValidator rejects patterns using RE2-incompatible features."""
+    with pytest.raises(ValidationError):
+        PatternValidator.model_validate({"type": "pattern", "value": invalid_pattern})
+
+
+class TestRe2CharClassEscaping:
+    """Character class escaping with \\] must not cause false-positive
+    possessive-quantifier detection or spurious class closure."""
+
+    @pytest.mark.parametrize(
+        ("pattern", "should_accept"),
+        [
+            # Escaped ] inside character class (RE2-safe)
+            (r"[\\]]", True),
+            (r"[a-z\\]]", True),
+            (r"[-\\]]", True),
+            (r"[\\]a-z]", True),
+            (r"[\\]]+", True),
+            (r"[\\]]*", True),
+            (r"[\\]]?", True),
+            (r"[\\]]{1,3}", True),
+            # Normal character classes (RE2-safe)
+            (r"[a-z]", True),
+            (r"[0-9]+", True),
+            (r"[^aeiou]", True),
+            # Possessive quantifier after char class (non-RE2)
+            (r"[a-z]++", False),
+            (r"[a-z]*+", False),
+            (r"[a-z]?+", False),
+            (r"[a-z]{2}+", False),
+        ],
+    )
+    def test_char_class_escaping_boundaries(
+        self, pattern: str, should_accept: bool
+    ) -> None:
+        if should_accept:
+            PatternValidator.model_validate(
+                {"type": "pattern", "value": pattern}
+            )
+        else:
+            with pytest.raises(ValidationError):
+                PatternValidator.model_validate(
+                    {"type": "pattern", "value": pattern}
+                )
+
+
+def test_datepicker_in_validate_form_document_rejects_basic_date() -> None:
+    """A document with a DatePicker using basic-date value is rejected."""
+    document = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-date-test",
+        "formId": "date-test-form",
+        "revision": 1,
+        "root": {
+            "id": "date-form",
+            "type": "Form",
+            "props": {"title": "Date Test"},
+            "children": [
+                {
+                    "id": "date-picker",
+                    "type": "DatePicker",
+                    "props": {
+                        "label": "Select date",
+                        "minDate": "20260727"
+                    },
+                    "children": [],
+                    "dataPath": "/selectedDate"
+                },
+                {
+                    "id": "submit-btn",
+                    "type": "Button",
+                    "props": {"label": "Submit", "variant": "primary"},
+                    "children": [],
+                    "action": {"actionId": "do-submit"}
+                }
+            ]
+        },
+        "data": {"initialValues": {"selectedDate": "2026-07-27"}},
+        "actions": [{"id": "do-submit", "type": "submit", "endpointKey": "test.submit", "method": "POST"}]
+    }
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.SCHEMA_INVALID
+
+
+def test_datepicker_data_binding_rejects_basic_date() -> None:
+    """DatePicker initial value using basic-date format triggers DATA_BINDING_INVALID."""
+    document = {
+        "schemaVersion": "1.0.0",
+        "requestId": "req-date-db",
+        "formId": "date-db-form",
+        "revision": 1,
+        "root": {
+            "id": "db-form",
+            "type": "Form",
+            "props": {"title": "Date DB Test"},
+            "children": [
+                {
+                    "id": "db-date",
+                    "type": "DatePicker",
+                    "props": {"label": "Pick date"},
+                    "children": [],
+                    "dataPath": "/selectedDate"
+                },
+                {
+                    "id": "db-submit",
+                    "type": "Button",
+                    "props": {"label": "Go", "variant": "primary"},
+                    "children": [],
+                    "action": {"actionId": "go"}
+                }
+            ]
+        },
+        "data": {"initialValues": {"selectedDate": "20260727"}},
+        "actions": [{"id": "go", "type": "submit", "endpointKey": "test.go", "method": "POST"}]
+    }
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DATA_BINDING_INVALID
+
+
+def test_datepicker_initial_value_rejects_basic_date() -> None:
+    """DatePicker initial value using basic-date format triggers DATA_BINDING_INVALID."""
+    document = deepcopy(_examples()[1])  # conditional-application has a DatePicker
+    # Set the DatePicker's initial value to a basic date (no dashes)
+    document["data"]["initialValues"]["access"] = {"startDate": "20260727", "level": None}
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.DATA_BINDING_INVALID
+
+
+def test_document_timestamp_semantic_check_still_validates_order() -> None:
+    """Expires before generated is still rejected after strict parsing."""
+    document = deepcopy(_examples()[0])
+    document["generatedAt"] = "2026-07-25T10:00:00Z"
+    document["expiresAt"] = "2026-07-24T10:00:00Z"
+    assert _error_code(lambda: validate_form_document(document)) == ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID
 
 
 # ---------------------------------------------------------------------------

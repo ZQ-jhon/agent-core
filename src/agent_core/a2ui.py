@@ -27,6 +27,23 @@ _ENDPOINT_KEY_PATTERN = r"^[A-Za-z][A-Za-z0-9._-]*$"
 _ERROR_CODE_PATTERN = r"^[A-Z][A-Z0-9_]*$"
 _SEMVER_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
 
+_STRICT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?"
+    r"(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+
+
+def _parse_strict_date(value: str) -> None:
+    """Validate *value* is strict YYYY-MM-DD (JSON Schema ``format: date``)."""
+    if not _STRICT_DATE_RE.match(value):
+        raise ValueError("date must use YYYY-MM-DD format")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("date must use YYYY-MM-DD format") from exc
+
 StableId = Annotated[
     str,
     Field(min_length=1, max_length=128, pattern=_STABLE_ID_PATTERN),
@@ -262,9 +279,78 @@ class NumberValidator(A2UIModel):
         return value
 
 
-_RE2_UNSUPPORTED_PATTERN = re.compile(
-    r"(?:\\[1-9]|\\k<|\(\?(?:[=!<]|P[=<]|\(|R|&))"
-)
+def _validate_re2_pattern(value: str) -> str:
+    """Validate *value* uses only RE2-compatible regex features.
+
+    Does NOT execute the pattern and does NOT fall back to Python ``re``
+    compilation as a proxy for RE2 acceptance.
+
+    The scanner performs a single character-level pass.  It tracks whether the
+    cursor is inside a ``[...]`` character class so that possessive-quantifier
+    detection (``*+``, ``++``, ``?+``, ``{…}+``) is disabled inside brackets.
+    Escaped ``\\]`` is consumed by the escape branch before the bare-``]``
+    check, so it never spuriously closes a class.
+    """
+    i = 0
+    n = len(value)
+    in_char_class = False
+
+    while i < n:
+        ch = value[i]
+
+        if ch == "\\":
+            if i + 1 < n:
+                nxt = value[i + 1]
+                # Backreference: \\1 .. \\9
+                if nxt.isdigit() and nxt != "0":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named backreference: \\k<name>  or  \\k'name'
+                if nxt == "k" and i + 2 < n and value[i + 2] in ("<", "'"):
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+            i += 2
+            continue
+
+        if ch == "[" and not in_char_class:
+            in_char_class = True
+            i += 1
+            continue
+        if ch == "]" and in_char_class:
+            in_char_class = False
+            i += 1
+            continue
+
+        if not in_char_class:
+            # Atomic group: (?>
+            if value[i : i + 3] == "(?>":
+                raise ValueError("pattern uses a feature outside the RE2 subset")
+
+            # Lookahead / lookbehind / conditional / recursion /
+            # named-capture-definition.
+            if value[i : i + 2] == "(?" and i + 2 < n:
+                after = value[i + 2]
+                if after in "=!<":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named capture definition: (?P<name>  — must reject explicitly.
+                if i + 3 < n and value[i : i + 4] == "(?P<":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Named backreference: (?P=name)
+                if i + 3 < n and value[i : i + 4] == "(?P=":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                # Conditional: (?(
+                if value[i : i + 3] == "(?(":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+                if after in "R&":
+                    raise ValueError("pattern uses a feature outside the RE2 subset")
+
+            # Possessive quantifiers: *+, ++, ?+, {…}+
+            if ch in "*+?" and i + 1 < n and value[i + 1] == "+":
+                raise ValueError("pattern uses a feature outside the RE2 subset")
+            if ch == "}" and i + 1 < n and value[i + 1] == "+":
+                raise ValueError("pattern uses a feature outside the RE2 subset")
+
+        i += 1
+
+    return value
 
 
 class PatternValidator(A2UIModel):
@@ -276,9 +362,7 @@ class PatternValidator(A2UIModel):
     @field_validator("value")
     @classmethod
     def _re2_compatible(cls, value: str) -> str:
-        if _RE2_UNSUPPORTED_PATTERN.search(value):
-            raise ValueError("pattern uses a feature outside the RE2 subset")
-        return value
+        return _validate_re2_pattern(value)
 
 
 class IntegerValidator(A2UIModel):
@@ -390,10 +474,7 @@ class DatePickerProps(CommonInputProps):
     @classmethod
     def _iso_date(cls, value: str | None) -> str | None:
         if value is not None:
-            try:
-                datetime.fromisoformat(f"{value}T00:00:00")
-            except ValueError as exc:
-                raise ValueError("date must use YYYY-MM-DD") from exc
+            _parse_strict_date(value)
         return value
 
     @model_validator(mode="after")
@@ -644,12 +725,15 @@ class DocumentMeta(A2UIModel):
 
 
 def _validate_rfc3339(value: str) -> str:
+    """Return *value* if it is a strict RFC 3339 timestamp (JSON Schema
+    ``format: date-time``).  Rejects space separators, basic date/time
+    forms, and non-standard offsets."""
+    if not _RFC3339_RE.match(value):
+        raise ValueError("timestamp must use RFC 3339 format")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
     except ValueError as exc:
         raise ValueError("timestamp must use RFC 3339 format") from exc
-    if parsed.tzinfo is None:
-        raise ValueError("timestamp must include a UTC offset")
     return value
 
 
@@ -942,8 +1026,8 @@ def _validate_condition_types(condition: Condition, initial_values: dict[str, An
             return
         if type(source_value) is str and type(condition.value) is str:
             try:
-                datetime.fromisoformat(f"{source_value}T00:00:00")
-                datetime.fromisoformat(f"{condition.value}T00:00:00")
+                _parse_strict_date(source_value)
+                _parse_strict_date(condition.value)
             except ValueError as exc:
                 raise _SemanticIssue(ProtocolErrorCode.RULE_INVALID) from exc
             return
@@ -960,7 +1044,7 @@ def _validate_input_value(node: ComponentNode, value: Any) -> None:
             if type(value) is not str:
                 raise _SemanticIssue(ProtocolErrorCode.DATA_BINDING_INVALID)
             try:
-                datetime.fromisoformat(f"{value}T00:00:00")
+                _parse_strict_date(value)
             except ValueError as exc:
                 raise _SemanticIssue(ProtocolErrorCode.DATA_BINDING_INVALID) from exc
     elif component_type == "NumberInput":
@@ -1111,8 +1195,8 @@ def _validate_document_semantics(document: A2UIFormDocumentV1) -> None:
     sources_by_id = {source.id: source for source in data_sources}
 
     if document.generated_at is not None and document.expires_at is not None:
-        generated = datetime.fromisoformat(document.generated_at.replace("Z", "+00:00"))
-        expires = datetime.fromisoformat(document.expires_at.replace("Z", "+00:00"))
+        generated = datetime.fromisoformat(document.generated_at.replace("Z", "+00:00").replace("z", "+00:00"))
+        expires = datetime.fromisoformat(document.expires_at.replace("Z", "+00:00").replace("z", "+00:00"))
         if expires <= generated:
             raise _SemanticIssue(ProtocolErrorCode.SCHEMA_SEMANTIC_INVALID)
 
