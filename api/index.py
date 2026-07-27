@@ -4,6 +4,9 @@ Vercel serverless entry point for agent-core A2UI Backend.
 Deployed alongside the Vite frontend on Vercel under the same domain.
 Uses Vercel's native ``api/index.py`` catch-all pattern — no rewrite needed.
 
+Same-domain deployment means no CORS middleware is required; the browser
+sees a single origin for both static assets and /api/* calls.
+
 Authentication
 --------------
 Fail-closed by default.  Controlled by ``A2UI_AUTH_MODE``:
@@ -23,13 +26,13 @@ public unauthenticated demo after confirming the scope.
 Scope
 -----
 resolve-only (no database).  Submissions need persistent storage (Turso /
-Neon); see DEPLOYMENT.md.
+Neon) and a separate follow-up issue.
 
 Fixture stability
 -----------------
 Resolved by ``__file__`` — never depends on CWD.  If the bundled fixture
-file is missing or unreadable, health returns 503 and all resolve requests
-return 500 (fail-fast, no silent broken service).
+file is missing, unreadable, or contains zero examples, health returns 503
+and all resolve requests return 500 (fail-fast — no silent broken service).
 """
 
 from __future__ import annotations
@@ -47,7 +50,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from agent_core.a2ui_http import (
@@ -81,7 +83,6 @@ elif _AUTH_MODE_RAW == "bearer":
             "(< 32 chars) — authentication is not operational"
         )
 else:
-    # Unset or unrecognised → fail-closed
     logger.critical(
         "A2UI_AUTH_MODE=%r is not 'open' or 'bearer' — "
         "authentication is not operational",
@@ -91,7 +92,7 @@ else:
     _API_TOKEN = ""
 
 # ---------------------------------------------------------------------------
-# Form fixtures — fail-fast on load failure
+# Form fixtures — fail-fast on load failure (also reject empty set)
 # ---------------------------------------------------------------------------
 
 FIXTURES_PATH = _PROJECT_ROOT / "docs" / "a2ui" / "v1" / "form-examples-v1.json"
@@ -104,14 +105,21 @@ if FIXTURES_PATH.is_file():
         with open(FIXTURES_PATH, encoding="utf-8") as fh:
             for example in json.load(fh).get("examples", []):
                 _fixtures[example["formId"]] = example
-        _fixtures_loaded = True
-        logger.info("Loaded %d A2UI form fixtures", len(_fixtures))
+        if _fixtures:
+            _fixtures_loaded = True
+            logger.info("Loaded %d A2UI form fixtures", len(_fixtures))
+        else:
+            logger.critical("A2UI fixtures file contains zero examples")
     except (OSError, json.JSONDecodeError, KeyError) as exc:
         logger.critical(
             "Failed to parse A2UI fixtures from %s: %s", FIXTURES_PATH, exc
         )
 else:
     logger.critical("A2UI fixtures not found at %s", FIXTURES_PATH)
+
+
+class FixturesNotReady(Exception):
+    """Raised when fixtures aren't loaded — adapter will return 500."""
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +144,6 @@ def _principal_provider(request: Request) -> AuthenticatedPrincipal | None:
     if AUTH_MODE == "open":
         return AuthenticatedPrincipal(subject_id="demo-user", tenant_id="demo")
 
-    # bearer mode (also the fail-closed default)
     token = _extract_bearer_token(request)
     if not token:
         return None
@@ -153,21 +160,12 @@ def _form_authorizer(
     form_key: str,
     _untrusted_context: Any,
 ) -> AuthorizedResolveContext | None:
-    """Authorize the principal for *any* form in the loaded fixture set.
-
-    The authorizer does NOT reject unknown form keys here: an unknown key
-    passes through to the resolver, which raises ``FormNotFound`` → 404.
+    """Authorize all forms for every authenticated principal.
 
     Returns ``None`` only for the ``FORBIDDEN`` case: an authenticated
-    principal attempting to access a **known, restricted** form they lack
-    permission for.  In this demo deployment all fixtures are public;
-    production hosts should add per-form ACL checks.
+    principal attempting to access a known, restricted form.  In this
+    demo deployment all fixtures are public, so no form is restricted.
     """
-    # All loaded fixtures are public in this deployment.
-    # Unknown keys are NOT denied — let the resolver 404 them.
-    if form_key in _fixtures:
-        return AuthorizedResolveContext({"formKey": form_key})
-    # Form not in fixtures: still authorize; resolver will 404 if absent.
     return AuthorizedResolveContext({"formKey": form_key})
 
 
@@ -177,22 +175,19 @@ def _form_resolver(
 ) -> dict[str, Any]:
     """Resolve from approved A2UI fixtures.
 
-    Raises ``FormNotFound`` → 404 per the shared adapter contract.
+    Raises ``FixturesNotReady`` → 500 when fixtures aren't loaded
+    (infrastructure failure, must not masquerade as a missing form).
+
+    Raises ``FormNotFound`` → 404 when the specific form key is absent.
     """
+    if not _fixtures_loaded:
+        raise FixturesNotReady("A2UI fixtures are not available")
+
     form_key = authorized_context.values.get("formKey", "")
     document = _fixtures.get(form_key)
     if document is None:
         raise FormNotFound(f"Form not found: {form_key}")
     return document
-
-
-# ---------------------------------------------------------------------------
-# Service readiness — all conditions must be satisfied
-# ---------------------------------------------------------------------------
-
-def _service_ready() -> bool:
-    """Return True only when fixtures are loaded AND auth config is valid."""
-    return _fixtures_loaded and _auth_ready
 
 
 # ---------------------------------------------------------------------------
@@ -215,17 +210,8 @@ app = FastAPI(
 
 app.include_router(_resolve_router)
 
-# ---------------------------------------------------------------------------
-# CORS
-# ---------------------------------------------------------------------------
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Same-domain deployment: no CORS middleware needed.
+# The browser sees a single origin for static assets and /api/*.
 
 # ---------------------------------------------------------------------------
 # Health check — HTTP 503 when service is not operational
