@@ -540,8 +540,8 @@ describe('A2UI form state controller', () => {
       submit: async () => ({
         status: 'validation_error',
         fieldErrors: {
-          '/name': [{ code: 'NAME_INVALID', message: 'Name needs review', retryable: false }],
-          '/missing': [{ code: 'MISSING_INVALID', message: 'Missing field', retryable: false }],
+          '/name': [{ code: 'NAME_INVALID', message: 'Name needs review' }],
+          '/missing': [{ code: 'MISSING_INVALID', message: 'Missing field' }],
         },
         errors: [{ code: 'FORM_INVALID', message: 'Review the form', retryable: false }],
       }),
@@ -574,13 +574,13 @@ describe('A2UI form state controller', () => {
       {
         status: 'validation_error',
         fieldErrors: {
-          '/name': [{ code: 'NAME_INVALID', message: 'Name needs review', retryable: false }],
+          '/name': [{ code: 'NAME_INVALID', message: 'Name needs review' }],
         },
       },
       {
         status: 'validation_error',
         fieldErrors: {
-          '/email': [{ code: 'EMAIL_INVALID', message: 'Email needs review', retryable: false }],
+          '/email': [{ code: 'EMAIL_INVALID', message: 'Email needs review' }],
         },
       },
     ]

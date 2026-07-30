@@ -1,3 +1,14 @@
+export {
+  createSubmitTransport,
+  fetchSubmission,
+  resolveForm,
+} from './api-client.ts'
+export type {
+  A2UIApiError,
+  FetchSubmissionResult,
+  PersistedSubmission,
+  ResolveFormResult,
+} from './api-client.ts'
 export { schemaErrorCodes } from './errors.ts'
 export type { ParseResult, SchemaDiagnostic, SchemaErrorCode } from './errors.ts'
 export { parseA2UIFormDocument, parseA2UIJson, parseSchema } from './parser.ts'
@@ -34,6 +45,7 @@ export type {
   FormFieldState,
   FormRuntimeDiagnostic,
   FormRuntimeDiagnosticCode,
+  FormServerFieldError,
   FormTransientError,
   FormServerError,
   FormSubmissionResult,

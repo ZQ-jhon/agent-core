@@ -141,6 +141,11 @@ export interface FormServerError {
   readonly code: string
   readonly message: string
   readonly retryable: boolean
+}
+
+export interface FormServerFieldError {
+  readonly code: string
+  readonly message: string
   readonly componentId?: StableId
 }
 
@@ -151,7 +156,7 @@ export interface FormSubmitSuccessResponse {
 
 export interface FormSubmitValidationErrorResponse {
   readonly status: 'validation_error'
-  readonly fieldErrors: Readonly<Record<string, readonly FormServerError[]>>
+  readonly fieldErrors: Readonly<Record<string, readonly FormServerFieldError[]>>
   readonly errors?: readonly FormServerError[]
 }
 
@@ -638,14 +643,14 @@ export function createA2UIFormController(
     }
 
     if (response.status === 'validation_error') {
-      formErrors = (response.errors ?? []).map((error) => toSummaryError(error.code, error.message, error.retryable, error.componentId))
+      formErrors = (response.errors ?? []).map((error) => toSummaryError(error.code, error.message, error.retryable))
       const nextServerErrors = new Map<DataPath, readonly FormFieldError[]>()
       for (const [rawPath, errors] of Object.entries(response.fieldErrors)) {
         const dataPath = rawPath as DataPath
         if (!fieldComponentIds.has(dataPath)) {
           for (const error of errors) {
             formErrors.push({
-              ...toSummaryError('FIELD_ERROR_UNMAPPED', error.message, error.retryable, error.componentId),
+              ...toSummaryError('FIELD_ERROR_UNMAPPED', error.message, false, error.componentId),
               path: dataPath,
               originalCode: error.code,
             })
@@ -680,7 +685,7 @@ export function createA2UIFormController(
 
     const hasRevisionConflict = response.errors.some((error) => error.code === 'FORM_REVISION_CONFLICT')
     serverErrors = new Map()
-    formErrors = response.errors.map((error) => toSummaryError(error.code, error.message, hasRevisionConflict ? false : error.retryable, error.componentId))
+    formErrors = response.errors.map((error) => toSummaryError(error.code, error.message, hasRevisionConflict ? false : error.retryable))
     const retryable = !hasRevisionConflict && response.errors.some((error) => error.retryable)
     retryableSubmission = retryable ? { request: retryRequest } : undefined
     submission = {

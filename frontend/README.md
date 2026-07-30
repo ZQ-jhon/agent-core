@@ -1,22 +1,48 @@
-# A2UI frontend (Stage 1)
+# A2UI frontend
 
-本目录是 `agent-core` 同一 Git 仓库内的独立前端子工程。本阶段只交付可启动、可构建、可测试的工程骨架，不实现 Schema runtime、业务组件、真实接口、Upload 或 Markdown。
+该目录是 `agent-core` 仓库内独立的 React + TypeScript + Vite 前端工程。
+应用启动后会从真实后端解析并渲染 A2UI Form Profile v1 表单。
 
 ## 运行要求
 
-- Node.js 24 LTS（推荐；兼容范围见 `package.json#engines`）
-- pnpm 11.9.0（版本由 `packageManager` 固定）
+- Node.js 24 或更高版本（兼容范围见 `package.json#engines`）
+- pnpm 11.9.0
 
 ```bash
-cd frontend
-corepack enable
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
 开发服务器默认地址为 `http://localhost:5173`。
 
-## 验证命令
+## API 约定
+
+前端严格使用 `docs/a2ui/v1/http-api-v1.md` 冻结的三个端点：
+
+- `POST /api/a2ui/v1/forms:resolve`
+- `POST /api/a2ui/v1/forms/{formId}/submissions`
+- `GET /api/a2ui/v1/submissions/{submissionId}`
+
+所有请求均为同源相对路径，不读取 `VITE_API_BASE_URL`，也不在浏览器中保存
+共享 Bearer token。后端不可达、返回非契约响应或返回非法 Schema 时，应用会显示
+明确错误状态；不会回退到本地 Mock 或 fixture。
+
+## 代码边界
+
+```text
+src/
+├── a2ui/        # Profile parser、运行时、renderer 与 HTTP API 适配层
+├── app/         # 应用加载状态、错误状态与页面组合
+├── test/        # Vitest 全局测试初始化
+├── index.css    # 全局基础样式
+└── main.tsx     # React DOM 入口
+```
+
+`src/a2ui/api-client.ts` 只负责冻结 HTTP 契约和传输错误；服务端返回的表单仍须经过
+现有严格 parser 后才会进入 renderer。renderer 与 form controller 不自行解析 URL
+或发起网络请求。
+
+## 验证
 
 ```bash
 pnpm typecheck
@@ -24,31 +50,4 @@ pnpm test
 pnpm build
 ```
 
-构建产物输出到 `frontend/dist/`，该目录不提交。
-
-## 目录边界
-
-```text
-frontend/
-├─ public/          # 原样复制的静态资源；本阶段不包含业务资源
-├─ src/
-│  ├─ app/          # 应用入口壳；后续页面组合层
-│  ├─ test/         # Vitest 全局测试初始化
-│  ├─ index.css     # 全局基础样式
-│  └─ main.tsx      # React DOM 启动入口
-├─ .env.example     # 后续联调环境变量模板
-├─ package.json     # 独立前端脚本与依赖
-└─ vite.config.ts   # Vite / Vitest 基础配置
-```
-
-后续 Stage 应在上述边界内扩展：应用组装放入 `src/app/`；可复用但不含业务语义的代码放入新建的 `src/shared/`；Schema runtime、组件与业务页面的具体目录由对应 Stage 在冻结输入下落地。本阶段不预建空业务目录。
-
-## 前后端隔离与联调入口
-
-- Python 后端继续使用仓库根目录的 `uv`、`pyproject.toml` 和既有启动命令；前端不修改其依赖、启动方式或 API 行为。
-- 前后端分别启动，前端当前不会发起网络请求，也未配置代理或虚构接口路径。
-- `.env.example` 预留 `VITE_API_BASE_URL`。只有后续 Stage 获得真实接口基址后才复制为 `.env.local` 并赋值；Vite 只会将 `VITE_` 前缀变量暴露给浏览器，因此不得在其中写入密钥。
-
-## 分支方案
-
-Stage 1 由 Multica 在任务专用分支 `agent/agent/24c73f07` 上交付，该分支从 `origin/master` 创建。仓库中没有新仓库或嵌套 `.git`；后续工作从本 PR 合并后的目标分支继续，不另建前端仓库。
+构建产物输出到 `dist/`，该目录不提交。

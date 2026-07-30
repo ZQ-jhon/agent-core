@@ -1,7 +1,7 @@
 .app-shell {
   width: min(720px, calc(100% - 40px));
   margin: 0 auto;
-  padding: 96px 0;
+  padding: 64px 0 96px;
 }
 
 .app-shell__eyebrow {
@@ -13,41 +13,102 @@
   text-transform: uppercase;
 }
 
-.app-shell h1 {
+.app-shell h1,
+.app-shell [role="form"] h1 {
   margin: 0;
   color: #0f172a;
-  font-size: clamp(2.25rem, 7vw, 4.5rem);
-  line-height: 1;
-  letter-spacing: -0.04em;
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  line-height: 1.08;
+  letter-spacing: -0.035em;
 }
 
-.app-shell__summary {
+.app-shell__status {
+  margin-top: 32px;
+  padding: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.app-shell__status--error {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.app-shell__status p,
+.app-shell form > p {
   max-width: 640px;
-  margin: 24px 0 0;
+  margin: 20px 0 0;
   color: #475569;
   font-size: 1.1rem;
   line-height: 1.7;
 }
 
-.app-shell__scope {
-  margin-top: 48px;
+.app-shell form {
+  display: grid;
+  gap: 24px;
+  margin-top: 32px;
   padding: 24px;
   border: 1px solid #cbd5e1;
   border-radius: 16px;
   background: #ffffff;
 }
 
-.app-shell__scope h2 {
-  margin: 0 0 16px;
-  color: #0f172a;
-  font-size: 1rem;
+.app-shell section {
+  display: grid;
+  gap: 12px;
 }
 
-.app-shell__scope ul {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding-left: 20px;
-  color: #334155;
-  line-height: 1.6;
+.app-shell h2,
+.app-shell p {
+  margin-top: 0;
+}
+
+.app-shell label,
+.app-shell legend {
+  color: #1e293b;
+  font-weight: 650;
+}
+
+.app-shell input,
+.app-shell select,
+.app-shell textarea {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  color: inherit;
+  background: #ffffff;
+  font: inherit;
+}
+
+.app-shell button {
+  width: fit-content;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #2563eb;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.app-shell button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.app-shell button:focus-visible,
+.app-shell input:focus-visible,
+.app-shell select:focus-visible,
+.app-shell textarea:focus-visible {
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+.app-shell [role="alert"] {
+  color: #991b1b;
 }
